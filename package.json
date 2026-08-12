@@ -5,7 +5,9 @@
   "type": "module",
   "description": "Local-first usage analytics for AI coding harnesses (Pi, Codex).",
   "license": "MIT",
-  "engines": { "node": ">=20.10" },
+  "engines": {
+    "node": ">=20.10"
+  },
   "scripts": {
     "dev": "concurrently -k -n server,client -c blue,green \"npm:dev:server\" \"npm:dev:client\"",
     "dev:server": "tsx watch src/server/main.ts",
@@ -30,7 +32,7 @@
     "@radix-ui/react-tooltip": "^1.1.3",
     "@tanstack/react-query": "^5.59.0",
     "@tanstack/react-table": "^8.20.5",
-    "better-sqlite3": "^11.3.0",
+    "better-sqlite3": "^12.0.0",
     "clsx": "^2.1.1",
     "date-fns": "^4.1.0",
     "date-fns-tz": "^3.2.0",
@@ -58,5 +60,14 @@
     "typescript": "^5.6.2",
     "vite": "^5.4.6",
     "vitest": "^2.1.1"
+  },
+  "allowScripts": {
+    "esbuild@0.18.20": true,
+    "esbuild@0.19.12": true,
+    "esbuild@0.28.1": true,
+    "esbuild@0.21.5": true,
+    "better-sqlite3@12.11.1": true,
+    "fsevents@2.3.2": false,
+    "fsevents@2.3.3": false
   }
 }
