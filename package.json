@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "description": "Local-first usage analytics for AI coding harnesses (Pi, Codex).",
+  "license": "MIT",
   "engines": { "node": ">=20.10" },
   "scripts": {
     "dev": "concurrently -k -n server,client -c blue,green \"npm:dev:server\" \"npm:dev:client\"",
