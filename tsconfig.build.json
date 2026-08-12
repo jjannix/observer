@@ -1,0 +1,11 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "declaration": false,
+    "sourceMap": true,
+    "outDir": "dist"
+  },
+  "include": ["src/server", "src/shared"],
+  "exclude": ["src/client", "tests", "**/*.test.ts", "playwright.config.ts"]
+}

@@ -1,0 +1,14 @@
+node_modules/
+dist/
+dist-client/
+*.log
+.env
+.env.local
+.DS_Store
+Observer.sqlite3
+observer.sqlite3
+observer.sqlite3-*
+/test-results/
+/playwright-report/
+/playwright/.cache/
+coverage/
