@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 
 export function fmtInt(n: number | null | undefined): string {
   if (n == null) return "—";
@@ -45,19 +45,30 @@ export interface Segment {
 
 /** Horizontal proportion bar with a legend. */
 export function CompositionBar({ segments, total }: { segments: Segment[]; total: number }) {
+  const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
   const denom = total || segments.reduce((s, x) => s + x.value, 0) || 1;
+  const itemClass = (index: number, base: string) => {
+    if (hoveredIndex == null) return base;
+    return `${base} ${hoveredIndex === index ? "is-active" : "is-muted"}`;
+  };
+
   return (
-    <div>
+    <div className={`composition${hoveredIndex == null ? "" : " has-active"}`} onMouseLeave={() => setHoveredIndex(null)}>
       <div className="comp-bar">
-        {segments
-          .filter((s) => s.value > 0)
-          .map((s) => (
-            <span key={s.label} style={{ width: `${(s.value / denom) * 100}%`, background: s.color }} title={`${s.label}: ${fmtInt(s.value)}`} />
-          ))}
+        {segments.map((s, index) => s.value > 0 && (
+          <span
+            key={s.label}
+            className={itemClass(index, "comp-segment")}
+            data-label={s.label}
+            style={{ width: `${(s.value / denom) * 100}%`, background: s.color }}
+            title={`${s.label}: ${fmtInt(s.value)}`}
+            onMouseEnter={() => setHoveredIndex(index)}
+          />
+        ))}
       </div>
       <div className="comp-legend">
-        {segments.map((s) => (
-          <div key={s.label} className="item">
+        {segments.map((s, index) => (
+          <div key={s.label} className={itemClass(index, "item")} data-label={s.label} onMouseEnter={() => setHoveredIndex(index)}>
             <span className="swatch" style={{ background: s.color }} />
             {s.label}
             <span className="v">{fmtCompact(s.value)}</span>

@@ -6,6 +6,17 @@ test.describe("Observer UI", () => {
     await expect(page.locator("h1")).toHaveText("Overview");
     await expect(page.getByText("Usage over time", { exact: true })).toBeVisible();
     await expect(page.getByText("Token composition", { exact: true })).toBeVisible();
+
+    const composition = page.locator(".composition-section .composition");
+    const cachedLegend = composition.locator('.comp-legend .item[data-label="Cached input"]');
+    const cachedSegment = composition.locator('.comp-segment[data-label="Cached input"]');
+    await cachedLegend.hover();
+    await expect(cachedLegend).toHaveClass(/is-active/);
+    await expect(cachedSegment).toHaveClass(/is-active/);
+    await expect(composition.locator('.comp-legend .item[data-label="Uncached input"]')).toHaveClass(/is-muted/);
+    await cachedSegment.hover();
+    await expect(cachedLegend).toHaveClass(/is-active/);
+
     await expect(page.getByRole("button", { name: /sync now/i }).first()).toBeVisible();
   });
 
