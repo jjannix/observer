@@ -87,7 +87,7 @@ export function Overview() {
         <div className="hero-primary">
           <div className="hero-value">{fmtCompact(totals?.processedTokens)}</div>
           <div className="hero-caption" id="processed-label">tokens processed</div>
-          <div className={`period-change${change != null && change < 0 ? " negative" : ""}${change != null && Math.abs(change) >= 0.5 ? " notable" : ""}`}>
+          <div className={`period-change${change != null && change < 0 ? " negative" : ""}${change != null && change >= 0.1 ? " notable" : ""}`}>
             {change == null ? `${fmtInt(totals?.requests)} requests · ${fmtInt(totals?.sessions)} sessions` : `${change >= 0 ? "+" : ""}${fmtPct(change)} vs previous ${rangeLabel(filters.range).replace("last ", "")}`}
           </div>
         </div>
