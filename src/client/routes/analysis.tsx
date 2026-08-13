@@ -130,12 +130,9 @@ export function Analysis() {
       </section>
 
       <section className="instrument-section provider-section">
-        <div className="section-head">
-          <div><h2>Usage by provider</h2><span className="hint">Compare the services delivering your model usage</span></div>
-          <button className="section-toggle" type="button" aria-controls="provider-breakdown" aria-expanded={providerDetailsOpen} aria-label={`${providerDetailsOpen ? "Hide" : "Show"} provider details`} onClick={() => setProviderDetailsOpen((open) => !open)}>{providerDetailsOpen ? "Hide details" : "Show details"}</button>
-        </div>
+        <div className="section-head"><div><h2>Usage by provider</h2><span className="hint">Compare the services delivering your model usage</span></div></div>
         <div className={`dimension-comparison-layout${providerDetailsOpen ? "" : " is-collapsed"}`}>
-          <ComparisonBreakdown id="provider-breakdown" hidden={!providerDetailsOpen} rows={providerRows} total={totals?.processedTokens ?? 0} empty="No provider observations in this period." />
+          <ComparisonSidebar dimension="provider" open={providerDetailsOpen} onToggle={() => setProviderDetailsOpen((open) => !open)} rows={providerRows} total={totals?.processedTokens ?? 0} empty="No provider observations in this period." />
           <div className="dimension-chart">
             {providerChart ? <MultiLineChart buckets={providerChart.buckets} providers={providerChart.providers} points={providerChart.points} formatValue={fmtCompact} ariaLabel="Provider usage comparison over time" /> : <div className="skeleton chart-skeleton" />}
           </div>
@@ -143,12 +140,9 @@ export function Analysis() {
       </section>
 
       <section className="instrument-section harness-section">
-        <div className="section-head">
-          <div><h2>Usage by harness</h2><span className="hint">Compare the coding agents behind your observations</span></div>
-          <button className="section-toggle" type="button" aria-controls="harness-breakdown" aria-expanded={harnessDetailsOpen} aria-label={`${harnessDetailsOpen ? "Hide" : "Show"} harness details`} onClick={() => setHarnessDetailsOpen((open) => !open)}>{harnessDetailsOpen ? "Hide details" : "Show details"}</button>
-        </div>
+        <div className="section-head"><div><h2>Usage by harness</h2><span className="hint">Compare the coding agents behind your observations</span></div></div>
         <div className={`dimension-comparison-layout${harnessDetailsOpen ? "" : " is-collapsed"}`}>
-          <ComparisonBreakdown id="harness-breakdown" hidden={!harnessDetailsOpen} rows={harnessRows} total={totals?.processedTokens ?? 0} empty="No harness observations in this period." />
+          <ComparisonSidebar dimension="harness" open={harnessDetailsOpen} onToggle={() => setHarnessDetailsOpen((open) => !open)} rows={harnessRows} total={totals?.processedTokens ?? 0} empty="No harness observations in this period." />
           <div className="dimension-chart">
             {harnessChart ? <MultiLineChart buckets={harnessChart.buckets} providers={harnessChart.providers} points={harnessChart.points} formatValue={fmtCompact} ariaLabel="Harness usage comparison over time" /> : <div className="skeleton chart-skeleton" />}
           </div>
@@ -215,6 +209,15 @@ function harnessLabel(value: string): string { return ({ codex: "Codex", pi: "Pi
 function shortId(value: string): string { const parts = value.replace(/\\/g, "/").split("/").filter(Boolean); return parts.at(-1) ?? value; }
 function projectLabel(projectId: string, projects: Array<{ id: string; path: string }> | undefined): string { const resolved = projects?.find((project) => project.id === projectId); return shortId(resolved?.path ?? projectId); }
 function Readout({ value, label, detail }: { value: string; label: string; detail: string }) { return <div className="readout"><div className="readout-value">{value}</div><div className="readout-label">{label}</div><div className="readout-detail">{detail}</div></div>; }
+function ComparisonSidebar({ dimension, open, onToggle, rows, total, empty }: { dimension: "provider" | "harness"; open: boolean; onToggle: () => void; rows: Array<{ id: string; label: string; totals: SummaryTotals | undefined }>; total: number; empty: string }) {
+  const label = `${open ? "Collapse" : "Expand"} ${dimension} sidebar`;
+  return <aside className={`dimension-sidebar${open ? "" : " is-collapsed"}`} aria-label={`${dimension} breakdown`}>
+    <ComparisonBreakdown id={`${dimension}-breakdown`} hidden={!open} rows={rows} total={total} empty={empty} />
+    <button className="dimension-sidebar-toggle" type="button" aria-controls={`${dimension}-breakdown`} aria-expanded={open} aria-label={label} title={label} onClick={onToggle}>
+      <svg viewBox="0 0 14 14" aria-hidden="true"><path d={open ? "M9 3.5 5.5 7 9 10.5" : "M5 3.5 8.5 7 5 10.5"} /></svg>
+    </button>
+  </aside>;
+}
 function ComparisonBreakdown({ id, hidden, rows, total, empty }: { id: string; hidden: boolean; rows: Array<{ id: string; label: string; totals: SummaryTotals | undefined }>; total: number; empty: string }) {
   return <div className="dimension-breakdown" id={id} hidden={hidden}>
     {rows.map(({ id, label, totals: row }, index) => {

@@ -47,15 +47,15 @@ test.describe("Observer UI", () => {
     await expect(page.getByText("Usage by provider", { exact: true })).toBeVisible();
     await expect(page.getByText("Usage by harness", { exact: true })).toBeVisible();
 
-    const providerToggle = page.getByRole("button", { name: "Hide provider details" });
+    const providerToggle = page.getByRole("button", { name: "Collapse provider sidebar" });
     await expect(providerToggle).toHaveAttribute("aria-expanded", "true");
     await providerToggle.click();
-    await expect(page.getByRole("button", { name: "Show provider details" })).toHaveAttribute("aria-expanded", "false");
+    await expect(page.getByRole("button", { name: "Expand provider sidebar" })).toHaveAttribute("aria-expanded", "false");
     await expect(page.locator("#provider-breakdown")).toBeHidden();
 
-    const harnessToggle = page.getByRole("button", { name: "Hide harness details" });
+    const harnessToggle = page.getByRole("button", { name: "Collapse harness sidebar" });
     await harnessToggle.click();
-    await expect(page.getByRole("button", { name: "Show harness details" })).toHaveAttribute("aria-expanded", "false");
+    await expect(page.getByRole("button", { name: "Expand harness sidebar" })).toHaveAttribute("aria-expanded", "false");
     await expect(page.locator("#harness-breakdown")).toBeHidden();
   });
 
