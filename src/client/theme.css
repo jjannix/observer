@@ -246,6 +246,8 @@ label { color: var(--fg-2); font-size: 12px; }
 .section-head { min-height: 32px; display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; margin-bottom: 18px; }
 .section-head > div { display: flex; flex-direction: column; gap: 2px; }
 .section-head .hint { color: var(--fg-3); font-size: 11px; }
+.section-toggle { min-height: 24px; padding: 2px 0 4px; color: var(--fg-3); background: transparent; border: 0; border-bottom: 1px solid transparent; border-radius: 0; font-size: 10px; }
+.section-toggle:hover { color: var(--fg-1); background: transparent; border-bottom-color: var(--border-strong); }
 .section-link { color: var(--fg-2); font-size: 12px; transition: color var(--duration) ease; }
 .section-link:hover { color: var(--accent); }
 .section-link span { margin-left: 5px; }
@@ -377,7 +379,9 @@ table.data tbody tr { transition: background-color var(--duration) ease; }
 .provider-section { min-width: 0; }
 
 .dimension-comparison-layout { display: grid; grid-template-columns: minmax(270px, .62fr) minmax(0, 1.38fr); gap: 72px; align-items: start; }
+.dimension-comparison-layout.is-collapsed { grid-template-columns: minmax(0, 1fr); }
 .dimension-breakdown { padding-top: 24px; }
+.dimension-breakdown[hidden] { display: none; }
 .dimension-row { padding: 0 0 25px; }
 .dimension-row + .dimension-row { padding-top: 24px; border-top: 1px solid var(--border); }
 .dimension-row-head { display: flex; align-items: baseline; justify-content: space-between; gap: 24px; }

@@ -46,6 +46,17 @@ test.describe("Observer UI", () => {
     await expect(page.getByText("Cache economics", { exact: true })).toBeVisible();
     await expect(page.getByText("Usage by provider", { exact: true })).toBeVisible();
     await expect(page.getByText("Usage by harness", { exact: true })).toBeVisible();
+
+    const providerToggle = page.getByRole("button", { name: "Hide provider details" });
+    await expect(providerToggle).toHaveAttribute("aria-expanded", "true");
+    await providerToggle.click();
+    await expect(page.getByRole("button", { name: "Show provider details" })).toHaveAttribute("aria-expanded", "false");
+    await expect(page.locator("#provider-breakdown")).toBeHidden();
+
+    const harnessToggle = page.getByRole("button", { name: "Hide harness details" });
+    await harnessToggle.click();
+    await expect(page.getByRole("button", { name: "Show harness details" })).toHaveAttribute("aria-expanded", "false");
+    await expect(page.locator("#harness-breakdown")).toBeHidden();
   });
 
   test("settings route shows config file location and actions", async ({ page }) => {
