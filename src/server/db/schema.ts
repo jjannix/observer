@@ -90,6 +90,9 @@ export const rawUsageRecords = sqliteTable(
     lineOrdinal: integer("line_ordinal").notNull(),
     envelopeHash: text("envelope_hash").notNull(),
     parserVersion: text("parser_version").notNull(),
+    // API request identity, backfilled from the envelope so that superseded
+    // snapshot versions for one response can be collapsed deterministically.
+    requestId: text("request_id"),
     occurredAt: text("occurred_at").notNull(),
     normalizationStatus: text("normalization_status").notNull().default("normalized"),
     envelopeJson: text("envelope_json").notNull(),
@@ -102,6 +105,8 @@ export const rawUsageRecords = sqliteTable(
     sourceIdx: index("raw_usage_source_idx").on(t.sourceId),
     statusIdx: index("raw_usage_status_idx").on(t.normalizationStatus),
     occurredIdx: index("raw_usage_occurred_idx").on(t.occurredAt),
+    // Supersession lookup: prior normalized snapshots for one request.
+    supersedeIdx: index("raw_usage_supersede_idx").on(t.sourceId, t.logicalSessionId, t.requestId),
   }),
 );
 

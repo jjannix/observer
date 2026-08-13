@@ -1,5 +1,5 @@
 import type { RawDatabase } from "../db/index.js";
-import type { HarnessId, NormalizationStatus } from "@shared/contracts";
+import { QUALITY_FLAGS, type HarnessId, type NormalizationStatus } from "@shared/contracts";
 import type { SourceConfig } from "../config/schema.js";
 
 /**
@@ -180,11 +180,12 @@ export class Repository {
 
   insertRawRecord(args: {
     sourceId: string;
-    sourceFileId: number;
+    sourceFileId: number | null;
     logicalSessionId: string;
     lineOrdinal: number;
     envelopeHash: string;
     parserVersion: string;
+    requestId: string | null;
     occurredAt: string;
     status: NormalizationStatus;
     envelopeJson: string;
@@ -195,14 +196,57 @@ export class Repository {
       .prepare(
         `INSERT INTO raw_usage_records
            (source_id, source_file_id, logical_session_id, line_ordinal, envelope_hash,
-            parser_version, occurred_at, normalization_status, envelope_json, quality_flags_json, created_at)
+            parser_version, request_id, occurred_at, normalization_status, envelope_json,
+            quality_flags_json, created_at)
          VALUES (@sourceId, @sourceFileId, @logicalSessionId, @lineOrdinal, @envelopeHash,
-                 @parserVersion, @occurredAt, @status, @envelopeJson, @qualityFlagsJson, @createdAt)
+                 @parserVersion, @requestId, @occurredAt, @status, @envelopeJson,
+                 @qualityFlagsJson, @createdAt)
          ON CONFLICT(logical_session_id, line_ordinal, envelope_hash) DO NOTHING`,
       )
       .run(args) as any;
     if (info.changes > 0) return { inserted: true, id: Number(info.lastInsertRowid) };
     return { inserted: false, id: null };
+  }
+
+  /**
+   * Mark every earlier `normalized` snapshot for the same API request as a
+   * duplicate. Used when a newer snapshot supersedes a version that a previous
+   * sync batch already stored as `normalized` (the in-collector dedup only sees
+   * snapshots within a single batch). Returns the number of rows superseded.
+   */
+  supersedePriorNormalizedRawRecords(args: {
+    sourceId: string;
+    logicalSessionId: string;
+    requestId: string;
+    keepId: number;
+  }): number {
+    if (!args.requestId) return 0;
+    const info = this.db
+      .prepare(
+        `UPDATE raw_usage_records
+           SET normalization_status = 'duplicate',
+               quality_flags_json = ?
+         WHERE source_id = ? AND logical_session_id = ? AND request_id = ?
+           AND normalization_status = 'normalized'
+           AND id != ?`,
+      )
+      .run(JSON.stringify([QUALITY_FLAGS.DUPLICATE_TELEMETRY]), args.sourceId, args.logicalSessionId, args.requestId, args.keepId) as any;
+    return info.changes ?? 0;
+  }
+
+  /** Bulk-mark raw snapshots as duplicates during renormalize collapse. */
+  markRawRecordsDuplicate(ids: number[]): number {
+    if (ids.length === 0) return 0;
+    const placeholders = ids.map(() => "?").join(",");
+    const info = this.db
+      .prepare(
+        `UPDATE raw_usage_records
+           SET normalization_status = 'duplicate',
+               quality_flags_json = ?
+         WHERE id IN (${placeholders})`,
+      )
+      .run(JSON.stringify([QUALITY_FLAGS.DUPLICATE_TELEMETRY]), ...ids) as any;
+    return info.changes ?? 0;
   }
 
   setRawRecordStatus(id: number, status: NormalizationStatus) {
@@ -433,7 +477,7 @@ export class Repository {
   }
 
   listAllRawRecords(): any[] {
-    return this.db.prepare(`SELECT * FROM raw_usage_records`).all() as any[];
+    return this.db.prepare(`SELECT * FROM raw_usage_records ORDER BY id`).all() as any[];
   }
 
   countWarnings(): number {
