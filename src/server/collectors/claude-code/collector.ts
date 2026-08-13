@@ -12,7 +12,7 @@ import type {
   DiscoveredFile,
 } from "../contract.js";
 
-const CLAUDE_CODE_ADAPTER_VERSION = "claude-code-1";
+const CLAUDE_CODE_ADAPTER_VERSION = "claude-code-2";
 
 interface MessageNode {
   parentId: string | null;
@@ -23,7 +23,7 @@ interface ClaudeCodeParserState {
   sessionId: string | null;
   cwd: string | null;
   nodes: Record<string, MessageNode>;
-  seenResponses: Record<string, true>;
+  responseSnapshots: Record<string, string>;
 }
 
 interface ParsedToken {
@@ -33,7 +33,7 @@ interface ParsedToken {
 }
 
 function emptyState(): ClaudeCodeParserState {
-  return { sessionId: null, cwd: null, nodes: {}, seenResponses: {} };
+  return { sessionId: null, cwd: null, nodes: {}, responseSnapshots: {} };
 }
 
 /**
@@ -42,7 +42,8 @@ function emptyState(): ClaudeCodeParserState {
  * Claude Code persists transcripts below `~/.claude/projects` and records API
  * accounting on assistant messages. One API response can be written as several
  * assistant records (for example, one record per thinking/text/tool block), so
- * usage is deduplicated by the provider message id and request id.
+ * exact repeats are deduplicated by response identity while changed snapshots
+ * supersede earlier usage for that response.
  *
  * The transcript schema is explicitly internal to Claude Code. Keeping this
  * adapter versioned lets Observer rebuild only this source when its parser is
@@ -96,6 +97,7 @@ export class ClaudeCodeCollector implements Collector {
       opts.maxLines,
     );
     const emits: CollectEmit[] = [];
+    const responseEmitIndexes = new Map<string, number>();
 
     for (const line of lines) {
       const trimmed = line.text.trim();
@@ -122,13 +124,9 @@ export class ClaudeCodeCollector implements Collector {
       const recordUuid = stringValue(record.uuid);
       const responseKey = messageId
         ? providerRequestId ? `${messageId}:${providerRequestId}` : messageId
-        : recordUuid;
+        : providerRequestId ?? recordUuid;
       if (!responseKey) {
         emits.push(quarantine(line.ordinal, "missing-response-id"));
-        continue;
-      }
-      if (state.seenResponses[responseKey]) {
-        emits.push(duplicate(line.ordinal, "duplicate-telemetry"));
         continue;
       }
 
@@ -137,7 +135,12 @@ export class ClaudeCodeCollector implements Collector {
         emits.push(quarantine(line.ordinal, "invalid-token-count"));
         continue;
       }
-      state.seenResponses[responseKey] = true;
+      const snapshot = usageSnapshot(parsed);
+      if (state.responseSnapshots[responseKey] === snapshot) {
+        emits.push(duplicate(line.ordinal, "duplicate-telemetry"));
+        continue;
+      }
+      state.responseSnapshots[responseKey] = snapshot;
 
       // Synthetic UI messages contain an all-zero usage object and do not
       // represent an API request.
@@ -177,6 +180,14 @@ export class ClaudeCodeCollector implements Collector {
         },
       };
       envelope.envelopeHash = hashEnvelope(envelope);
+      const previousEmitIndex = responseEmitIndexes.get(responseKey);
+      if (previousEmitIndex != null) {
+        const previous = emits[previousEmitIndex];
+        if (previous.kind === "usage") {
+          emits[previousEmitIndex] = duplicate(previous.usage.envelope.lineOrdinal, "superseded-telemetry");
+        }
+      }
+      responseEmitIndexes.set(responseKey, emits.length);
       emits.push({ kind: "usage", usage: { envelope: envelope as RawUsageEnvelope } });
     }
 
@@ -269,11 +280,15 @@ function parseUsage(usage: Record<string, unknown>): {
 function token(record: Record<string, unknown>, key: string): ParsedToken {
   if (!(key in record)) return { value: 0, present: false, valid: true };
   const raw = record[key];
-  const number = typeof raw === "string" ? Number(raw) : raw;
-  if (typeof number !== "number" || !Number.isFinite(number) || number < 0) {
+  const number = typeof raw === "string" && raw.trim().length > 0 ? Number(raw) : raw;
+  if (typeof number !== "number" || !Number.isSafeInteger(number) || number < 0) {
     return { value: 0, present: true, valid: false };
   }
-  return { value: Math.trunc(number), present: true, valid: true };
+  return { value: number, present: true, valid: true };
+}
+
+function usageSnapshot(parsed: NonNullable<ReturnType<typeof parseUsage>>): string {
+  return JSON.stringify(parsed);
 }
 
 function hasTokenFields(usage: Record<string, unknown>): boolean {
@@ -343,9 +358,17 @@ function safeParseState(raw: string): ClaudeCodeParserState {
       sessionId: stringValue(parsed.sessionId),
       cwd: stringValue(parsed.cwd),
       nodes: asRecord(parsed.nodes) as Record<string, MessageNode> ?? {},
-      seenResponses: asRecord(parsed.seenResponses) as Record<string, true> ?? {},
+      responseSnapshots: stringRecord(parsed.responseSnapshots),
     };
   } catch {
     return emptyState();
   }
+}
+
+function stringRecord(value: unknown): Record<string, string> {
+  const record = asRecord(value);
+  if (!record) return {};
+  return Object.fromEntries(
+    Object.entries(record).filter((entry): entry is [string, string] => typeof entry[1] === "string"),
+  );
 }

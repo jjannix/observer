@@ -129,7 +129,7 @@ function writeClaudeCodeSession(dir: string, name: string) {
           input_tokens: 10,
           cache_read_input_tokens: 40,
           cache_creation_input_tokens: 20,
-          output_tokens: 30,
+          output_tokens: 300,
         },
       },
     },
@@ -270,11 +270,11 @@ describe("sync lifecycle", () => {
       )
       .get() as any;
     expect(event).toMatchObject({
-      occurred_at: "2026-08-13T11:00:00.000Z",
+      occurred_at: "2026-08-13T11:00:00.001Z",
       fresh_input_tokens: 10,
       cache_read_input_tokens: 40,
       cache_write_input_tokens: 20,
-      output_tokens: 30,
+      output_tokens: 300,
       raw_provider_id: null,
       raw_model_id: "claude-opus-4-6",
     });
@@ -283,6 +283,44 @@ describe("sync lifecycle", () => {
       .get() as any;
     expect(duplicate.c).toBe(1);
     expect(repo.countWarnings()).toBe(0);
+  });
+
+  it("updates Claude Code usage when a final snapshot is appended", async () => {
+    writeClaudeCodeSession(claudeCodeRoot, "claude-incremental");
+    engine.trigger("manual");
+    await engine.join();
+
+    appendFileSync(
+      join(claudeCodeRoot, "claude-incremental.jsonl"),
+      JSON.stringify({
+        type: "assistant",
+        uuid: "claude-assistant-final",
+        parentUuid: "claude-assistant-2",
+        sessionId: "claude-incremental",
+        timestamp: "2026-08-13T11:00:00.002Z",
+        requestId: "req-claude-1",
+        message: {
+          id: "msg-claude-1",
+          role: "assistant",
+          model: "claude-opus-4-6",
+          usage: {
+            input_tokens: 10,
+            cache_read_input_tokens: 40,
+            cache_creation_input_tokens: 20,
+            output_tokens: 600,
+          },
+        },
+      }) + "\n",
+      "utf8",
+    );
+    engine.trigger("manual");
+    await engine.join();
+
+    const event = repo["db"]
+      .prepare(`SELECT output_tokens FROM usage_events WHERE harness = 'claude-code'`)
+      .get() as any;
+    expect(countEvents(repo, "claude-code")).toBe(1);
+    expect(event.output_tokens).toBe(600);
   });
 
   it("reindexes Codex files when the adapter version changes", async () => {

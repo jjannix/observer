@@ -133,6 +133,52 @@ describe("Claude Code collector", () => {
     expect(quarantineReasons(result.emits)).not.toContain("duplicate-telemetry");
   });
 
+  it("retains the latest usage snapshot for one API response", async () => {
+    const final = assistant({
+      uuid: "assistant-2",
+      parentUuid: "assistant-1",
+      timestamp: "2026-08-13T10:01:01.000Z",
+      message: {
+        id: "msg-1",
+        role: "assistant",
+        model: "claude-sonnet-4-5",
+        usage: {
+          input_tokens: 11,
+          cache_read_input_tokens: 70,
+          cache_creation_input_tokens: 19,
+          output_tokens: 1_093,
+        },
+      },
+    });
+    const path = writeTranscript("snapshots", [assistant(), final]);
+
+    const result = await collect(path);
+    const envelopes = usageEmits(result.emits);
+    expect(envelopes).toHaveLength(1);
+    expect(envelopes[0].usage.outputTokens).toBe(1_093);
+    expect(envelopes[0].lineOrdinal).toBe(2);
+    expect(duplicateReasons(result.emits)).toContain("superseded-telemetry");
+  });
+
+  it("deduplicates by request id when the message id is missing", async () => {
+    const withoutMessageId = assistant({
+      message: {
+        role: "assistant",
+        model: "claude-sonnet-4-5",
+        usage: { input_tokens: 11, output_tokens: 23 },
+      },
+    });
+    const path = writeTranscript("request-id-only", [
+      withoutMessageId,
+      { ...withoutMessageId, uuid: "assistant-2" },
+    ]);
+
+    const result = await collect(path);
+    expect(usageEmits(result.emits)).toHaveLength(1);
+    expect(usageEmits(result.emits)[0].requestId).toBe("req-1");
+    expect(duplicateReasons(result.emits)).toContain("duplicate-telemetry");
+  });
+
   it("keeps separate requests when a provider reuses a message id", async () => {
     const path = writeTranscript("request-ids", [
       assistant(),
@@ -197,6 +243,33 @@ describe("Claude Code collector", () => {
     expect(quarantineReasons(result.emits)).toContain("invalid-token-count");
   });
 
+  it("quarantines fractional and unsafe token counts", async () => {
+    const fractional = assistant({
+      uuid: "fractional",
+      requestId: "req-fractional",
+      message: {
+        id: "msg-fractional",
+        role: "assistant",
+        model: "claude-opus-4-6",
+        usage: { input_tokens: 1.5, output_tokens: 4 },
+      },
+    });
+    const unsafe = assistant({
+      uuid: "unsafe",
+      requestId: "req-unsafe",
+      message: {
+        id: "msg-unsafe",
+        role: "assistant",
+        model: "claude-opus-4-6",
+        usage: { input_tokens: 1, output_tokens: Number.MAX_SAFE_INTEGER + 1 },
+      },
+    });
+    const result = await collect(writeTranscript("malformed-counts", [fractional, unsafe]));
+
+    expect(usageEmits(result.emits)).toHaveLength(0);
+    expect(quarantineReasons(result.emits)).toEqual(["invalid-token-count", "invalid-token-count"]);
+  });
+
   it("retains deduplication state across incremental appends", async () => {
     const path = writeTranscript("incremental", [assistant()]);
     const first = await collect(path);
@@ -220,6 +293,29 @@ describe("Claude Code collector", () => {
     expect(usageEmits(second.emits)).toHaveLength(1);
     expect(usageEmits(second.emits)[0].requestId).toBe("msg-2:req-2");
     expect(duplicateReasons(second.emits)).toContain("duplicate-telemetry");
+  });
+
+  it("updates a usage snapshot appended during incremental collection", async () => {
+    const path = writeTranscript("incremental-snapshot", [assistant()]);
+    const first = await collect(path);
+    appendFileSync(path, `${JSON.stringify(assistant({
+      uuid: "assistant-final",
+      timestamp: "2026-08-13T10:01:02.000Z",
+      message: {
+        id: "msg-1",
+        role: "assistant",
+        model: "claude-sonnet-4-5",
+        usage: { input_tokens: 11, output_tokens: 1_093 },
+      },
+    }))}\n`, "utf8");
+
+    const second = await collect(path, {
+      byteCursor: first.byteCursor,
+      lineCursor: first.lineCursor,
+      parserState: first.parserState,
+    });
+    expect(usageEmits(second.emits)).toHaveLength(1);
+    expect(usageEmits(second.emits)[0].usage.outputTokens).toBe(1_093);
   });
 
   it("discovers main and subagent transcripts with collision-safe identities", () => {
