@@ -72,7 +72,7 @@ export function CompositionBar({ segments, total }: { segments: Segment[]; total
             <span className="swatch" style={{ background: s.color }} />
             {s.label}
             <span className="v">{fmtCompact(s.value)}</span>
-            <span className="dim">{((s.value / denom) * 100).toFixed(0)}%</span>
+            <span className="dim">{((s.value / denom) * 100).toFixed(1)}%</span>
           </div>
         ))}
       </div>
