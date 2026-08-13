@@ -99,10 +99,10 @@ export function Metric({
 }
 
 export const COLORS = {
-  cacheRead: "var(--c-cache-read)",
-  fresh: "var(--c-fresh)",
-  output: "var(--c-output)",
-  cacheWrite: "var(--c-cache-write)",
-  unattributed: "var(--c-unattributed)",
-  reasoning: "var(--c-reasoning)",
+  cacheRead: "var(--signal-0)",
+  fresh: "var(--signal-1)",
+  output: "var(--accent)",
+  cacheWrite: "var(--signal-2)",
+  unattributed: "var(--signal-4)",
+  reasoning: "var(--signal-3)",
 };

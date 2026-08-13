@@ -85,12 +85,12 @@ function qs(o: Record<string, unknown>): string {
 export function rangeToFilters(range: RangeKey, _tz: string): Pick<RangeFilters, "from" | "to"> {
   const now = new Date();
   if (range === "all") return { from: null, to: null };
-  const days = range === "7d" ? 7 : range === "30d" ? 30 : 90;
+  const days = range === "7d" ? 7 : range === "30d" ? 30 : range === "90d" ? 90 : 365;
   const from = new Date(now.getTime() - days * 86400_000);
   return { from: from.toISOString(), to: null };
 }
 
-export type RangeKey = "7d" | "30d" | "90d" | "all" | "custom";
+export type RangeKey = "7d" | "30d" | "90d" | "1y" | "all" | "custom";
 
 /** Polls health for active-sync status + warnings while mounted. */
 export function useHealth(intervalMs = 2000): {

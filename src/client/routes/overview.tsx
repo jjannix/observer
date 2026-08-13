@@ -1,23 +1,22 @@
 import { useMemo, useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQueries, useQuery } from "@tanstack/react-query";
+import { Link } from "react-router-dom";
 import { api, rangeToFilters } from "../api.js";
 import { CHART_METRICS, DEFAULT_FILTERS, FiltersBar, type FilterState } from "../components/Filters.js";
 import { StackedAreaChart } from "../components/Chart.js";
-import { CompositionBar, COLORS, Kpi, Metric, fmtCompact, fmtDate, fmtInt, fmtPct, fmtUsd } from "../components/ui.js";
-import { colorFor } from "../components/colors.js";
+import { CompositionBar, COLORS, fmtCompact, fmtInt, fmtPct, fmtUsd } from "../components/ui.js";
 
-const METRIC_FORMATTER: Record<string, (v: number) => string> = {
+const METRIC_FORMATTER: Record<string, (value: number) => string> = {
   processedTokens: fmtCompact,
   processedInputTokens: fmtCompact,
   freshInputTokens: fmtCompact,
   cacheReadInputTokens: fmtCompact,
   outputTokens: fmtCompact,
-  costUsd: (v) => fmtUsd(v / 1e9),
+  costUsd: (value) => fmtUsd(value / 1e9),
   requests: fmtCompact,
 };
 
 export function Overview() {
-  const qc = useQueryClient();
   const [filters, setFilters] = useState<FilterState>(DEFAULT_FILTERS);
 
   const range = useMemo(() => {
@@ -32,168 +31,145 @@ export function Overview() {
     };
   }, [filters]);
 
+  const previousRange = useMemo(() => {
+    if (!range.from) return null;
+    const start = new Date(range.from).getTime();
+    const end = range.to ? new Date(range.to).getTime() : Date.now();
+    const duration = end - start;
+    if (!Number.isFinite(duration) || duration <= 0) return null;
+    return {
+      ...range,
+      from: new Date(start - duration).toISOString(),
+      to: new Date(start).toISOString(),
+    };
+  }, [range]);
+
   const chartMetric = filters.chartMetric ?? "processedTokens";
-  const chartRange = { ...range };
-
   const { data: dims } = useQuery({ queryKey: ["dimensions"], queryFn: api.dimensions });
-  const { data: sources } = useQuery({ queryKey: ["sources"], queryFn: api.sources, refetchInterval: 3000 });
   const { data: summary } = useQuery({ queryKey: ["summary", range], queryFn: () => api.summary(range) });
-  const { data: ts } = useQuery({ queryKey: ["timeseries", chartRange, chartMetric], queryFn: () => api.timeseries(chartRange, chartMetric) });
+  const { data: previous } = useQuery({
+    queryKey: ["summary", "previous", previousRange],
+    queryFn: () => api.summary(previousRange!),
+    enabled: Boolean(previousRange),
+  });
+  const { data: timeseries } = useQuery({
+    queryKey: ["timeseries", range, chartMetric],
+    queryFn: () => api.timeseries(range, chartMetric),
+  });
+  const modelCandidates = (dims?.models ?? []).slice(0, 12);
+  const modelSummaries = useQueries({
+    queries: modelCandidates.map((model) => ({
+      queryKey: ["summary", "model", model.id, range],
+      queryFn: () => api.summary({ ...range, model: [model.id] }),
+      staleTime: 10_000,
+    })),
+  });
 
-  const syncMut = useMutation({ mutationFn: api.sync, onSuccess: () => qc.invalidateQueries() });
-
-  const t = summary?.totals;
-  const c = summary?.coverage;
-  const reportedReasoning = t?.reasoningOutputTokens ?? 0;
-  const unclassifiedOutput = t ? Math.max(0, t.outputTokens - reportedReasoning) : 0;
+  const totals = summary?.totals;
+  const previousTokens = previous?.totals.processedTokens;
+  const change = totals && previousTokens ? totals.processedTokens / previousTokens - 1 : null;
+  const reportedReasoning = totals?.reasoningOutputTokens ?? 0;
+  const unclassifiedOutput = totals ? Math.max(0, totals.outputTokens - reportedReasoning) : 0;
+  const modelRows = modelCandidates
+    .map((model, index) => ({ model, totals: modelSummaries[index]?.data?.totals }))
+    .filter(({ totals: row }) => row == null || row.processedTokens > 0)
+    .slice(0, 5);
 
   return (
-    <div>
-      <div className="page-head">
+    <div className="overview-page">
+      <div className="page-head overview-head">
         <div className="titles">
           <h1>Overview</h1>
-          <p className="page-sub">Canonical token accounting across Pi and Codex sessions.</p>
+          <p className="page-sub">Observe usage across every coding agent.</p>
         </div>
-        <div className="actions">
-          <button onClick={() => syncMut.mutate()} disabled={syncMut.isPending}>
-            {syncMut.isPending ? <span className="spinner" /> : null} Sync now
-          </button>
-        </div>
+        <FiltersBar dims={dims} filters={filters} onChange={setFilters} />
       </div>
 
-      <FiltersBar dims={dims} filters={filters} onChange={setFilters} />
-
-      {/* KPI strip — the hero numbers */}
-      <div className="section">
-        <div className="kpis">
-          <Kpi label="Processed tokens" value={fmtCompact(t?.processedTokens)} accent="var(--accent)"
-            sub={<>{fmtInt(t?.requests)} requests · {fmtInt(t?.sessions)} sessions</>} />
-          <Kpi label="Cost" value={fmtUsd(t?.costUsd)} accent="var(--c-fresh)"
-            sub={c ? <>coverage {fmtPct(c.costCoverage)}</> : undefined} />
-          <Kpi label="Cache hit rate" value={fmtPct(t?.cacheHitRate)} accent="var(--c-cache-read)"
-            sub={t?.cacheReuseEfficiency != null ? `reuse ${fmtPct(t.cacheReuseEfficiency)}` : "reuse —"} />
-          <Kpi label="Output" value={fmtCompact(t?.outputTokens)} accent="var(--c-output)"
-            sub={<>incl. {fmtCompact(reportedReasoning)} reasoning</>} />
-        </div>
-      </div>
-
-      {/* Time graph — provider colored */}
-      <div className="section">
-        <div className="surface pad">
-          <div className="section-head">
-            <h2>Usage over time</h2>
-            <div className="select-wrap" style={{ minWidth: 180 }}>
-              <select value={chartMetric} onChange={(e) => setFilters({ ...filters, chartMetric: e.target.value })}>
-                {CHART_METRICS.map((m) => (
-                  <option key={m.id} value={m.id}>{m.label}</option>
-                ))}
-              </select>
-            </div>
-          </div>
-          {ts ? (
-            <StackedAreaChart
-              buckets={ts.buckets}
-              providers={ts.providers}
-              points={ts.points}
-              formatValue={METRIC_FORMATTER[chartMetric] ?? fmtCompact}
-            />
-          ) : (
-            <div className="skeleton" style={{ height: 260 }} />
-          )}
-          {ts && ts.providers.length > 0 && (
-            <div className="comp-legend" style={{ marginTop: "var(--space-4)" }}>
-              {ts.providers.map((p) => (
-                <div key={p} className="item">
-                  <span className="swatch" style={{ background: colorFor(p) }} />
-                  {p}
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      </div>
-
-      {/* Token composition */}
-      <div className="section">
-        <div className="surface pad">
-          <div className="section-head">
-            <h2>Token composition</h2>
-            <span className="hint">{fmtCompact(t?.processedTokens)} processed total</span>
-          </div>
-          <CompositionBar
-            total={t?.processedTokens ?? 0}
-            segments={[
-              { label: "Cache read", value: t?.cacheReadInputTokens ?? 0, color: COLORS.cacheRead },
-              { label: "Fresh input", value: t?.freshInputTokens ?? 0, color: COLORS.fresh },
-              { label: "Cache write", value: t?.cacheWriteInputTokens ?? 0, color: COLORS.cacheWrite },
-              { label: "Output", value: unclassifiedOutput, color: COLORS.output },
-              { label: "Reported reasoning", value: reportedReasoning, color: COLORS.reasoning },
-              { label: "Unattributed", value: t?.unattributedTokens ?? 0, color: COLORS.unattributed },
-            ]}
-          />
-          <div className="dim" style={{ fontSize: 11.5, marginTop: "var(--space-4)" }}>
-            Output already includes reasoning. <strong>Reported reasoning</strong> counts only records with an
-            explicit reasoning field; the remaining output is intentionally not classified as reasoning.
+      <section className="hero-readout" aria-labelledby="processed-label">
+        <div className="hero-primary">
+          <div className="hero-value">{fmtCompact(totals?.processedTokens)}</div>
+          <div className="hero-caption" id="processed-label">tokens processed</div>
+          <div className={`period-change ${change != null && change < 0 ? "negative" : ""}`}>
+            {change == null ? `${fmtInt(totals?.requests)} requests · ${fmtInt(totals?.sessions)} sessions` : `${change >= 0 ? "+" : ""}${fmtPct(change)} vs previous ${rangeLabel(filters.range).replace("last ", "")}`}
           </div>
         </div>
-      </div>
-
-      {/* Secondary metrics */}
-      <div className="section">
-        <div className="section-head"><h2>Breakdown</h2></div>
-        <div className="metrics">
-          <Metric label="Processed input" value={fmtCompact(t?.processedInputTokens)} sub="fresh + cache" />
-          <Metric label="Fresh input" value={fmtCompact(t?.freshInputTokens)} />
-          <Metric label="Cache read" value={fmtCompact(t?.cacheReadInputTokens)} />
-          <Metric label="Cache write" value={fmtCompact(t?.cacheWriteInputTokens)} sub={c ? `${fmtPct(c.cacheWriteAvailable / (c.total || 1))} coverage` : undefined} />
-          <Metric label="Output / input" value={fmtPct(t?.outputInputRatio)} />
-          <Metric label="Turns" value={fmtInt(t?.turns)} />
-          <Metric label="Reasoning coverage" value={fmtPct(c ? c.reasoningAvailable / (c.total || 1) : null)} />
-          <Metric label="Classification coverage" value={fmtPct(c?.classificationCoverage)} />
+        <div className="secondary-readings">
+          <Readout label="uncached input" value={fmtCompact(totals?.freshInputTokens)} />
+          <Readout label="cached input" value={fmtCompact(totals?.cacheReadInputTokens)} />
+          <Readout label="output" value={fmtCompact(totals?.outputTokens)} />
+          <Readout label="estimated cost" value={fmtUsd(totals?.costUsd)} />
         </div>
-      </div>
+      </section>
 
-      {/* Sources health */}
-      <div className="section">
+      <section className="instrument-section usage-section">
         <div className="section-head">
-          <h2>Sources</h2>
-          <span className="hint">{sources ? `${sources.filter((s) => s.present).length}/${sources.length} present` : ""}</span>
+          <div>
+            <h2>Usage over time</h2>
+            <span className="hint">Daily observations · {rangeLabel(filters.range)}</span>
+          </div>
+          <div className="select-wrap metric-select">
+            <select aria-label="Chart metric" value={chartMetric} onChange={(event) => setFilters({ ...filters, chartMetric: event.target.value })}>
+              {CHART_METRICS.map((metric) => <option key={metric.id} value={metric.id}>{metric.label}</option>)}
+            </select>
+          </div>
         </div>
-        <div className="surface flush">
-          <table className="data">
-            <thead>
-              <tr>
-                <th>Source</th><th>Status</th><th>Files</th><th>Events</th>
-                <th>Quarantined</th><th>Duplicates</th><th>Last sync</th>
-              </tr>
-            </thead>
+        {timeseries ? (
+          <StackedAreaChart
+            buckets={timeseries.buckets}
+            providers={timeseries.providers}
+            points={timeseries.points}
+            formatValue={METRIC_FORMATTER[chartMetric] ?? fmtCompact}
+          />
+        ) : <div className="skeleton chart-skeleton" />}
+      </section>
+
+      <section className="instrument-section composition-section">
+        <div className="section-head">
+          <div><h2>Token composition</h2><span className="hint">What made up the observed total</span></div>
+          <Link to="/analysis" className="section-link">Open analysis <span>→</span></Link>
+        </div>
+        <CompositionBar
+          total={totals?.processedTokens ?? 0}
+          segments={[
+            { label: "Cached input", value: totals?.cacheReadInputTokens ?? 0, color: COLORS.cacheRead },
+            { label: "Uncached input", value: totals?.freshInputTokens ?? 0, color: COLORS.fresh },
+            { label: "Cache write", value: totals?.cacheWriteInputTokens ?? 0, color: COLORS.cacheWrite },
+            { label: "Output", value: unclassifiedOutput, color: COLORS.output },
+            { label: "Reasoning", value: reportedReasoning, color: COLORS.reasoning },
+            { label: "Unattributed", value: totals?.unattributedTokens ?? 0, color: COLORS.unattributed },
+          ]}
+        />
+      </section>
+
+      <section className="instrument-section models-section">
+        <div className="section-head"><div><h2>Models</h2><span className="hint">Processed usage by model</span></div></div>
+        <div className="table-scroll">
+          <table className="data instrument-table">
+            <thead><tr><th>Model</th><th>Processed</th><th>Input</th><th>Output</th><th>Cache</th><th>Cost</th></tr></thead>
             <tbody>
-              {(sources ?? []).map((s) => (
-                <tr key={s.id}>
-                  <td>
-                    <div className="row">
-                      <span className="dot" style={{ background: s.harness === "pi" ? "var(--c-cache-write)" : "var(--c-output)" }} />
-                      <div style={{ display: "flex", flexDirection: "column" }}>
-                        <span style={{ color: "var(--fg-0)" }}>{s.label}</span>
-                        <span className="dim mono" style={{ fontSize: 10.5 }}>{s.root}</span>
-                      </div>
-                    </div>
-                  </td>
-                  <td>{s.present ? <span className="badge ok">present</span> : <span className="badge danger">missing</span>}</td>
-                  <td className="tnum">{s.filesPresent}/{s.filesDiscovered}</td>
-                  <td className="tnum">{fmtInt(s.normalizedEvents)}</td>
-                  <td className="tnum">{s.quarantined > 0 ? <span className="badge warn">{fmtCompact(s.quarantined)}</span> : <span className="dim">0</span>}</td>
-                  <td className="tnum dim">{fmtInt(s.duplicates)}</td>
-                  <td className="dim">{fmtDate(s.lastSyncFinishedAt)}</td>
+              {modelRows.map(({ model, totals: row }) => {
+                return <tr key={model.id}>
+                  <td><span className="model-id">{model.display}</span></td>
+                  <td className="tnum">{fmtCompact(row?.processedTokens)}</td>
+                  <td className="tnum">{fmtCompact(row?.processedInputTokens)}</td>
+                  <td className="tnum">{fmtCompact(row?.outputTokens)}</td>
+                  <td className="tnum">{fmtPct(row?.cacheHitRate)}</td>
+                  <td className="tnum">{fmtUsd(row?.costUsd)}</td>
                 </tr>
-              ))}
-              {(!sources || sources.length === 0) && (
-                <tr><td colSpan={7} className="empty">No sources discovered yet.</td></tr>
-              )}
+              })}
+              {modelRows.length === 0 && <tr><td colSpan={6} className="empty">No model observations in this period.</td></tr>}
             </tbody>
           </table>
         </div>
-      </div>
+      </section>
     </div>
   );
+}
+
+function Readout({ label, value }: { label: string; value: string }) {
+  return <div className="readout"><div className="readout-value">{value}</div><div className="readout-label">{label}</div></div>;
+}
+
+function rangeLabel(range: FilterState["range"]): string {
+  return ({ "7d": "last 7 days", "30d": "last 30 days", "90d": "last 90 days", "1y": "last year", all: "all observations", custom: "custom period" })[range];
 }
