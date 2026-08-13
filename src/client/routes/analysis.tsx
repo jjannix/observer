@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 import { useQueries, useQuery } from "@tanstack/react-query";
-import type { NormalizedUsageEvent } from "@shared/contracts";
+import type { NormalizedUsageEvent, SummaryTotals } from "@shared/contracts";
 import { api, rangeToFilters } from "../api.js";
 import { FiltersBar, useFilterState } from "../components/Filters.js";
 import { MultiLineChart } from "../components/Chart.js";
@@ -25,6 +25,22 @@ export function Analysis() {
   const { data: timeseries } = useQuery({ queryKey: ["timeseries", "analysis", range], queryFn: () => api.timeseries(range, "processedTokens") });
   const { data: harnessTimeseries } = useQuery({ queryKey: ["timeseries", "analysis-harness", range], queryFn: () => api.timeseries(range, "processedTokens", "harness") });
   const { data: events } = useQuery({ queryKey: ["analysis", "events", range], queryFn: () => api.events(range, null, 250) });
+  const providerCandidates = useMemo(() => {
+    if (!timeseries) return [];
+    const providerTotals = new Map<string, number>();
+    for (const point of timeseries.points) providerTotals.set(point.provider, (providerTotals.get(point.provider) ?? 0) + point.value);
+    return [...providerTotals.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 4)
+      .map(([provider]) => provider);
+  }, [timeseries]);
+  const providerSummaries = useQueries({
+    queries: providerCandidates.map((provider) => ({
+      queryKey: ["summary", "analysis-provider", provider, range],
+      queryFn: () => api.summary({ ...range, provider: [provider] }),
+      staleTime: 10_000,
+    })),
+  });
   const harnessCandidates = filters.harness?.length ? filters.harness : (dims?.harnesses ?? []);
   const harnessSummaries = useQueries({
     queries: harnessCandidates.map((harness) => ({
@@ -50,11 +66,19 @@ export function Analysis() {
   const rawCost = totals && cacheRate != null && totals.costUsd > 0 ? totals.costUsd / Math.max(0.05, 1 - cacheRate) : null;
   const saved = rawCost == null ? null : Math.max(0, rawCost - (totals?.costUsd ?? 0));
   const largestSessions = useMemo(() => aggregateLargestSessions(events?.items ?? []).slice(0, 5), [events?.items]);
-  const harnessRows = harnessCandidates
-    .map((harness, index) => ({ harness, totals: harnessSummaries[index]?.data?.totals }))
+  const providerRows = providerCandidates
+    .map((provider, index) => ({ id: provider, label: providerLabel(provider, dims?.providers), totals: providerSummaries[index]?.data?.totals }))
     .filter(({ totals: row }) => row == null || row.processedTokens > 0)
     .sort((a, b) => (b.totals?.processedTokens ?? 0) - (a.totals?.processedTokens ?? 0));
-  const harnessTotal = harnessRows.reduce((sum, row) => sum + (row.totals?.processedTokens ?? 0), 0);
+  const harnessRows = harnessCandidates
+    .map((harness, index) => ({ id: harness, label: harnessLabel(harness), totals: harnessSummaries[index]?.data?.totals }))
+    .filter(({ totals: row }) => row == null || row.processedTokens > 0)
+    .sort((a, b) => (b.totals?.processedTokens ?? 0) - (a.totals?.processedTokens ?? 0));
+  const providerChart = useMemo(() => timeseries ? {
+    buckets: timeseries.buckets,
+    providers: timeseries.providers.map((provider) => providerLabel(provider, dims?.providers)),
+    points: timeseries.points.map((point) => ({ ...point, provider: providerLabel(point.provider, dims?.providers) })),
+  } : null, [dims?.providers, timeseries]);
   const harnessChart = useMemo(() => harnessTimeseries ? {
     buckets: harnessTimeseries.buckets,
     providers: harnessTimeseries.providers.map(harnessLabel),
@@ -104,25 +128,20 @@ export function Analysis() {
       </section>
 
       <section className="instrument-section provider-section">
-        <div className="section-head"><div><h2>Usage by provider</h2><span className="hint">Daily processed-token signals</span></div></div>
-        {timeseries ? <MultiLineChart buckets={timeseries.buckets} providers={timeseries.providers} points={timeseries.points} formatValue={fmtCompact} /> : <div className="skeleton chart-skeleton" />}
+        <div className="section-head"><div><h2>Usage by provider</h2><span className="hint">Compare the services delivering your model usage</span></div></div>
+        <div className="dimension-comparison-layout">
+          <ComparisonBreakdown rows={providerRows} total={totals?.processedTokens ?? 0} empty="No provider observations in this period." />
+          <div className="dimension-chart">
+            {providerChart ? <MultiLineChart buckets={providerChart.buckets} providers={providerChart.providers} points={providerChart.points} formatValue={fmtCompact} ariaLabel="Provider usage comparison over time" /> : <div className="skeleton chart-skeleton" />}
+          </div>
+        </div>
       </section>
 
       <section className="instrument-section harness-section">
         <div className="section-head"><div><h2>Usage by harness</h2><span className="hint">Compare the coding agents behind your observations</span></div></div>
-        <div className="harness-comparison-layout">
-          <div className="harness-breakdown">
-            {harnessRows.map(({ harness, totals: row }, index) => {
-              const share = harnessTotal > 0 ? (row?.processedTokens ?? 0) / harnessTotal : 0;
-              return <div className="harness-row" key={harness}>
-                <div className="harness-row-head"><strong>{harnessLabel(harness)}</strong><span>{fmtCompactPrecise(row?.processedTokens)}</span></div>
-                <div className="harness-share-track"><i className={`series-${index}`} style={{ width: `${share * 100}%` }} /></div>
-                <div className="harness-row-meta"><span>{fmtPct(share)} of usage</span><span>{fmtCompact(row?.outputTokens)} output</span><span>{fmtInt(row?.sessions)} sessions</span><span>{row?.costCoverage ? `${fmtUsd(row.costUsd)} cost` : "cost unavailable"}</span></div>
-              </div>;
-            })}
-            {harnessRows.length === 0 && <div className="empty harness-empty">No harness observations in this period.</div>}
-          </div>
-          <div className="harness-chart">
+        <div className="dimension-comparison-layout">
+          <ComparisonBreakdown rows={harnessRows} total={totals?.processedTokens ?? 0} empty="No harness observations in this period." />
+          <div className="dimension-chart">
             {harnessChart ? <MultiLineChart buckets={harnessChart.buckets} providers={harnessChart.providers} points={harnessChart.points} formatValue={fmtCompact} ariaLabel="Harness usage comparison over time" /> : <div className="skeleton chart-skeleton" />}
           </div>
         </div>
@@ -183,7 +202,21 @@ function aggregateLargestSessions(events: NormalizedUsageEvent[]): Array<{ id: s
 }
 
 function formatDate(iso: string): string { return new Intl.DateTimeFormat("en", { month: "short", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }).format(new Date(iso)); }
+function providerLabel(value: string, providers: Array<{ id: string; display: string }> | undefined): string { return providers?.find((provider) => provider.id === value)?.display ?? value; }
 function harnessLabel(value: string): string { return ({ codex: "Codex", pi: "Pi", opencode: "OpenCode", "claude-code": "Claude Code" } as Record<string, string>)[value] ?? value; }
 function shortId(value: string): string { const parts = value.replace(/\\/g, "/").split("/").filter(Boolean); return parts.at(-1) ?? value; }
 function projectLabel(projectId: string, projects: Array<{ id: string; path: string }> | undefined): string { const resolved = projects?.find((project) => project.id === projectId); return shortId(resolved?.path ?? projectId); }
 function Readout({ value, label, detail }: { value: string; label: string; detail: string }) { return <div className="readout"><div className="readout-value">{value}</div><div className="readout-label">{label}</div><div className="readout-detail">{detail}</div></div>; }
+function ComparisonBreakdown({ rows, total, empty }: { rows: Array<{ id: string; label: string; totals: SummaryTotals | undefined }>; total: number; empty: string }) {
+  return <div className="dimension-breakdown">
+    {rows.map(({ id, label, totals: row }, index) => {
+      const share = total > 0 ? (row?.processedTokens ?? 0) / total : 0;
+      return <div className="dimension-row" key={id}>
+        <div className="dimension-row-head"><strong>{label}</strong><span>{fmtCompactPrecise(row?.processedTokens)}</span></div>
+        <div className="dimension-share-track"><i className={`series-${index}`} style={{ width: `${share * 100}%` }} /></div>
+        <div className="dimension-row-meta"><span>{fmtPct(share)} of usage</span><span>{fmtCompact(row?.outputTokens)} output</span><span>{fmtInt(row?.sessions)} sessions</span><span>{row?.costCoverage ? `${fmtUsd(row.costUsd)} cost` : "cost unavailable"}</span></div>
+      </div>;
+    })}
+    {rows.length === 0 && <div className="empty dimension-empty">{empty}</div>}
+  </div>;
+}
