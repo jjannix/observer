@@ -49,6 +49,45 @@ function writePiSession(dir: string, name: string, n: number) {
   writeFileSync(join(dir, `${name}.jsonl`), lines.map((l) => JSON.stringify(l)).join("\n") + "\n", "utf8");
 }
 
+function writeModernCodexSession(dir: string, name: string) {
+  const lines = [
+    {
+      timestamp: "2026-08-13T10:00:00.000Z",
+      type: "session_meta",
+      payload: { id: `${name}-session`, model_provider: "openai", cwd: "C:/modern" },
+    },
+    {
+      timestamp: "2026-08-13T10:00:01.000Z",
+      type: "turn_context",
+      payload: { turn_id: "turn-1", model: "gpt-5.3-codex", cwd: "C:/modern" },
+    },
+    {
+      timestamp: "2026-08-13T10:00:02.000Z",
+      type: "event_msg",
+      payload: {
+        type: "token_count",
+        info: {
+          last_token_usage: {
+            input_tokens: 100,
+            cached_input_tokens: 20,
+            output_tokens: 10,
+            reasoning_output_tokens: 4,
+            total_tokens: 110,
+          },
+          total_token_usage: {
+            input_tokens: 100,
+            cached_input_tokens: 20,
+            output_tokens: 10,
+            reasoning_output_tokens: 4,
+            total_tokens: 110,
+          },
+        },
+      },
+    },
+  ];
+  writeFileSync(join(dir, `${name}.jsonl`), lines.map((line) => JSON.stringify(line)).join("\n") + "\n", "utf8");
+}
+
 describe("sync lifecycle", () => {
   let db: ReturnType<typeof makeDb>;
   let repo: Repository;
@@ -139,6 +178,50 @@ describe("sync lifecycle", () => {
       .prepare(`SELECT present FROM source_files WHERE source_id = 'codex-archived' AND logical_session_id = 'roll-1'`)
       .get() as any;
     expect(archived.present).toBe(1);
+  });
+
+  it("imports current Codex rollout usage", async () => {
+    writeModernCodexSession(codexRoot, "modern-rollout");
+
+    engine.trigger("manual");
+    await engine.join();
+
+    expect(countEvents(repo, "codex")).toBe(1);
+    const event = repo["db"]
+      .prepare(
+        `SELECT occurred_at, fresh_input_tokens, cache_read_input_tokens,
+                output_tokens, reasoning_output_tokens, raw_model_id
+         FROM usage_events WHERE harness = 'codex'`,
+      )
+      .get() as any;
+    expect(event).toMatchObject({
+      occurred_at: "2026-08-13T10:00:02.000Z",
+      fresh_input_tokens: 80,
+      cache_read_input_tokens: 20,
+      output_tokens: 10,
+      reasoning_output_tokens: 4,
+      raw_model_id: "gpt-5.3-codex",
+    });
+  });
+
+  it("reindexes Codex files when the adapter version changes", async () => {
+    writeModernCodexSession(codexRoot, "modern-rescan");
+    engine.trigger("manual");
+    await engine.join();
+    expect(countEvents(repo, "codex")).toBe(1);
+
+    repo["db"].prepare(`DELETE FROM sessions WHERE harness = 'codex'`).run();
+    repo["db"]
+      .prepare(`UPDATE collector_sources SET adapter_version = 'codex-1' WHERE id = 'codex-sessions'`)
+      .run();
+    expect(countEvents(repo, "codex")).toBe(0);
+
+    engine.trigger("manual");
+    await engine.join();
+
+    expect(countEvents(repo, "codex")).toBe(1);
+    const source = repo.getSource("codex-sessions");
+    expect(source.adapter_version).toBe("codex-2");
   });
 
   it("deleted source files are marked missing while analytics remain", async () => {

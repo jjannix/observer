@@ -401,6 +401,15 @@ export class Repository {
   /* ------------------------------- rebuild --------------------------------- */
 
   clearIndexForSource(sourceId: string) {
+    this.db
+      .prepare(
+        `DELETE FROM sessions
+         WHERE harness = (SELECT harness FROM collector_sources WHERE id = ?)
+           AND logical_session_id IN (
+             SELECT logical_session_id FROM source_files WHERE source_id = ?
+           )`,
+      )
+      .run(sourceId, sourceId);
     this.db.prepare(`DELETE FROM raw_usage_records WHERE source_id = ?`).run(sourceId);
     this.db.prepare(`DELETE FROM source_files WHERE source_id = ?`).run(sourceId);
     this.db.prepare(`DELETE FROM source_message_nodes WHERE source_id = ?`).run(sourceId);

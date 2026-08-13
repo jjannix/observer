@@ -140,6 +140,10 @@ export class SyncEngine {
     if (!collector) throw new Error(`no collector for harness ${source.harness}`);
 
     const present = existsSync(source.root);
+    const previousSource = this.repo.getSource(source.id);
+    if (previousSource && previousSource.adapter_version !== collector.adapterVersion) {
+      this.repo.clearIndexForSource(source.id);
+    }
     this.repo.setSourceError(source.id, null);
     this.repo.upsertCollectorSource(source, collector.adapterVersion, present);
     if (!present) {

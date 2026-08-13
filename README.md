@@ -77,14 +77,15 @@ Stable request identity is `sessionHeaderId:recordId`. Provider/model come from 
 
 ### Codex normalization
 
-Per-request usage is computed from **deltas between successive `total_token_usage` cumulative vectors**:
+Current Codex rollouts expose each request in `event_msg.payload.info.last_token_usage`; Observer records that vector directly and uses the nested `session_meta` / `turn_context` payloads for identity and model attribution. Legacy rollouts that expose only `total_token_usage` remain supported by taking deltas between successive cumulative vectors.
 
-- Equal cumulative vectors = duplicate telemetry → no second event.
-- `processedInput = input delta`; `fresh = input delta − cached-read delta − cache-write delta`.
-- Output delta includes reasoning; reasoning stays a subset.
+- Equal consecutive telemetry = duplicate telemetry → no second event.
+- `processedInput = input`; `fresh = input − cached-read − cache-write` (using deltas for legacy cumulative records).
+- Output includes reasoning; reasoning stays a subset.
 - Cache-write is marked unavailable for older records omitting the field.
 - If `total_tokens` increases while input/output components do not, the difference is retained as `unattributedTokens` (covers rollback/compaction).
 - Negative components, non-monotonic cumulative counters, or impossible cache relationships quarantine the event and raise a source-health warning.
+- Forked and subagent rollouts ignore their initial rapid replay of parent telemetry; accounting begins after the first one-second gap.
 
 ## Project & identity resolution
 

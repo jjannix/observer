@@ -26,6 +26,33 @@ const TOKEN = (u: Record<string, number | undefined>) => ({
   type: "event_msg",
   payload: { type: "token_count", total_token_usage: u },
 });
+const MODERN_META = (timestamp: string, source: unknown = "cli") => ({
+  timestamp,
+  type: "session_meta",
+  payload: {
+    id: "modern-session-id",
+    model_provider: "openai",
+    cwd: "C:/proj/modern",
+    source,
+  },
+});
+const MODERN_TURN = (timestamp: string, model: string, turnId: string) => ({
+  timestamp,
+  type: "turn_context",
+  payload: { model, turn_id: turnId, cwd: "C:/proj/modern" },
+});
+const MODERN_TOKEN = (
+  timestamp: string,
+  last: Record<string, number | undefined>,
+  total?: Record<string, number | undefined>,
+) => ({
+  timestamp,
+  type: "event_msg",
+  payload: {
+    type: "token_count",
+    info: { last_token_usage: last, ...(total ? { total_token_usage: total } : {}) },
+  },
+});
 
 describe("Codex collector", () => {
   let dir: string;
@@ -44,6 +71,100 @@ describe("Codex collector", () => {
       { byteCursor: 0, lineCursor: 0, parserState: null, ctx: { sourceId: "codex", historyCutoff: null } },
     );
   }
+
+  it("reads current Codex per-request usage and nested metadata", async () => {
+    const occurredAt = "2026-08-13T10:00:02.000Z";
+    const path = writeFile(
+      dir,
+      "modern",
+      [
+        JSON.stringify(MODERN_META("2026-08-13T10:00:00.000Z")),
+        JSON.stringify(MODERN_TURN("2026-08-13T10:00:01.000Z", "gpt-5.3-codex", "turn-modern")),
+        JSON.stringify(MODERN_TOKEN(
+          occurredAt,
+          {
+            input_tokens: 100,
+            cached_input_tokens: 30,
+            cache_write_input_tokens: 10,
+            output_tokens: 20,
+            reasoning_output_tokens: 8,
+            total_tokens: 120,
+          },
+          {
+            input_tokens: 100,
+            cached_input_tokens: 30,
+            cache_write_input_tokens: 10,
+            output_tokens: 20,
+            reasoning_output_tokens: 8,
+            total_tokens: 120,
+          },
+        )),
+      ].join("\n") + "\n",
+    );
+
+    const result = await run(path, "modern-rollout");
+    const envs = usageEmits(result.emits);
+    expect(envs).toHaveLength(1);
+    expect(envs[0]).toMatchObject({
+      sessionId: "modern-session-id",
+      turnId: "turn-modern",
+      rawProviderId: "openai",
+      rawModelId: "gpt-5.3-codex",
+      cwd: "C:/proj/modern",
+      occurredAt,
+      usage: {
+        freshInputTokens: 60,
+        cacheReadInputTokens: 30,
+        cacheWriteInputTokens: 10,
+        outputTokens: 20,
+        reasoningOutputTokens: 8,
+      },
+    });
+  });
+
+  it("deduplicates repeated current-format telemetry", async () => {
+    const usage = { input_tokens: 100, cached_input_tokens: 0, output_tokens: 20, total_tokens: 120 };
+    const path = writeFile(
+      dir,
+      "modern-duplicate",
+      [
+        JSON.stringify(MODERN_META("2026-08-13T10:00:00.000Z")),
+        JSON.stringify(MODERN_TOKEN("2026-08-13T10:00:02.000Z", usage, usage)),
+        JSON.stringify(MODERN_TOKEN("2026-08-13T10:00:03.000Z", usage, usage)),
+      ].join("\n") + "\n",
+    );
+
+    const result = await run(path);
+    expect(usageEmits(result.emits)).toHaveLength(1);
+    expect(result.emits.filter((emit) => emit.kind === "quarantine")).toHaveLength(1);
+  });
+
+  it("suppresses copied telemetry at the start of forked and subagent rollouts", async () => {
+    const copiedOne = { input_tokens: 100, cached_input_tokens: 0, output_tokens: 20, total_tokens: 120 };
+    const copiedTwo = { input_tokens: 200, cached_input_tokens: 50, output_tokens: 30, total_tokens: 230 };
+    const genuine = { input_tokens: 120, cached_input_tokens: 20, output_tokens: 25, total_tokens: 145 };
+    const path = writeFile(
+      dir,
+      "modern-subagent",
+      [
+        JSON.stringify(MODERN_META("2026-08-13T10:00:00.000Z", { subagent: { parent_thread_id: "parent" } })),
+        JSON.stringify(MODERN_TOKEN("2026-08-13T10:00:00.100Z", copiedOne, copiedOne)),
+        JSON.stringify(MODERN_TOKEN("2026-08-13T10:00:00.500Z", copiedTwo, copiedTwo)),
+        JSON.stringify(MODERN_TOKEN("2026-08-13T10:00:02.000Z", genuine, {
+          input_tokens: 320,
+          cached_input_tokens: 70,
+          output_tokens: 55,
+          total_tokens: 375,
+        })),
+      ].join("\n") + "\n",
+    );
+
+    const result = await run(path);
+    const envs = usageEmits(result.emits);
+    expect(envs).toHaveLength(1);
+    expect(envs[0].usage.freshInputTokens).toBe(100);
+    expect(envs[0].usage.outputTokens).toBe(25);
+  });
 
   it("computes deltas between successive cumulative vectors and subtracts cached input from fresh", async () => {
     const path = writeFile(
