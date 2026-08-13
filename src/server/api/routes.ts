@@ -10,7 +10,7 @@ import {
   type SyncRunInfo,
 } from "@shared/contracts";
 import type { AppState } from "../state.js";
-import { Analytics, type RangeFilters, type TimeseriesMetric } from "./analytics.js";
+import { Analytics, type RangeFilters, type TimeseriesGroupBy, type TimeseriesMetric } from "./analytics.js";
 import { observerConfigSchema, type ObserverConfig } from "../config/schema.js";
 import { resolveProject } from "../normalization/canonical.js";
 
@@ -47,7 +47,8 @@ export function registerApi(app: FastifyInstance, state: AppState): void {
   app.get("/api/v1/timeseries", async (req) => {
     const q = req.query as Record<string, unknown>;
     const metric = (typeof q.metric === "string" ? q.metric : "processedTokens") as TimeseriesMetric;
-    return analytics.timeseries(parseFilters(q), metric);
+    const groupBy = (q.groupBy === "harness" ? "harness" : "provider") as TimeseriesGroupBy;
+    return analytics.timeseries(parseFilters(q), metric, groupBy);
   });
 
   app.get("/api/v1/summary", async (req): Promise<unknown> => {

@@ -4,7 +4,7 @@ import type { NormalizedUsageEvent } from "@shared/contracts";
 import { api, rangeToFilters } from "../api.js";
 import { FiltersBar, useFilterState } from "../components/Filters.js";
 import { MultiLineChart } from "../components/Chart.js";
-import { COLORS, CompositionBar, fmtCompact, fmtCompactPrecise, fmtPct, fmtUsd } from "../components/ui.js";
+import { COLORS, CompositionBar, fmtCompact, fmtCompactPrecise, fmtInt, fmtPct, fmtUsd } from "../components/ui.js";
 
 export function Analysis() {
   const [filters, setFilters] = useFilterState();
@@ -23,7 +23,16 @@ export function Analysis() {
   const { data: dims } = useQuery({ queryKey: ["dimensions"], queryFn: api.dimensions });
   const { data: summary } = useQuery({ queryKey: ["summary", range], queryFn: () => api.summary(range) });
   const { data: timeseries } = useQuery({ queryKey: ["timeseries", "analysis", range], queryFn: () => api.timeseries(range, "processedTokens") });
+  const { data: harnessTimeseries } = useQuery({ queryKey: ["timeseries", "analysis-harness", range], queryFn: () => api.timeseries(range, "processedTokens", "harness") });
   const { data: events } = useQuery({ queryKey: ["analysis", "events", range], queryFn: () => api.events(range, null, 250) });
+  const harnessCandidates = filters.harness?.length ? filters.harness : (dims?.harnesses ?? []);
+  const harnessSummaries = useQueries({
+    queries: harnessCandidates.map((harness) => ({
+      queryKey: ["summary", "analysis-harness", harness, range],
+      queryFn: () => api.summary({ ...range, harness: [harness] }),
+      staleTime: 10_000,
+    })),
+  });
   const modelCandidates = (dims?.models ?? []).slice(0, 16);
   const modelSummaries = useQueries({
     queries: modelCandidates.map((model) => ({
@@ -41,6 +50,16 @@ export function Analysis() {
   const rawCost = totals && cacheRate != null && totals.costUsd > 0 ? totals.costUsd / Math.max(0.05, 1 - cacheRate) : null;
   const saved = rawCost == null ? null : Math.max(0, rawCost - (totals?.costUsd ?? 0));
   const largestSessions = useMemo(() => aggregateLargestSessions(events?.items ?? []).slice(0, 5), [events?.items]);
+  const harnessRows = harnessCandidates
+    .map((harness, index) => ({ harness, totals: harnessSummaries[index]?.data?.totals }))
+    .filter(({ totals: row }) => row == null || row.processedTokens > 0)
+    .sort((a, b) => (b.totals?.processedTokens ?? 0) - (a.totals?.processedTokens ?? 0));
+  const harnessTotal = harnessRows.reduce((sum, row) => sum + (row.totals?.processedTokens ?? 0), 0);
+  const harnessChart = useMemo(() => harnessTimeseries ? {
+    buckets: harnessTimeseries.buckets,
+    providers: harnessTimeseries.providers.map(harnessLabel),
+    points: harnessTimeseries.points.map((point) => ({ ...point, provider: harnessLabel(point.provider) })),
+  } : null, [harnessTimeseries]);
   const modelRows = modelCandidates
     .map((model, index) => ({ model, totals: modelSummaries[index]?.data?.totals }))
     .filter(({ totals: row }) => row == null || row.processedTokens > 0)
@@ -87,6 +106,26 @@ export function Analysis() {
         <div className="comparison-panel">
           <div className="section-head"><div><h2>Usage by provider</h2><span className="hint">Daily processed-token signals</span></div></div>
           {timeseries ? <MultiLineChart buckets={timeseries.buckets} providers={timeseries.providers} points={timeseries.points} formatValue={fmtCompact} /> : <div className="skeleton chart-skeleton" />}
+        </div>
+      </section>
+
+      <section className="instrument-section harness-section">
+        <div className="section-head"><div><h2>Usage by harness</h2><span className="hint">Compare the coding agents behind your observations</span></div></div>
+        <div className="harness-comparison-layout">
+          <div className="harness-breakdown">
+            {harnessRows.map(({ harness, totals: row }, index) => {
+              const share = harnessTotal > 0 ? (row?.processedTokens ?? 0) / harnessTotal : 0;
+              return <div className="harness-row" key={harness}>
+                <div className="harness-row-head"><strong>{harnessLabel(harness)}</strong><span>{fmtCompactPrecise(row?.processedTokens)}</span></div>
+                <div className="harness-share-track"><i className={`series-${index}`} style={{ width: `${share * 100}%` }} /></div>
+                <div className="harness-row-meta"><span>{fmtPct(share)} of usage</span><span>{fmtCompact(row?.outputTokens)} output</span><span>{fmtInt(row?.sessions)} sessions</span><span>{row?.costCoverage ? `${fmtUsd(row.costUsd)} cost` : "cost unavailable"}</span></div>
+              </div>;
+            })}
+            {harnessRows.length === 0 && <div className="empty harness-empty">No harness observations in this period.</div>}
+          </div>
+          <div className="harness-chart">
+            {harnessChart ? <MultiLineChart buckets={harnessChart.buckets} providers={harnessChart.providers} points={harnessChart.points} formatValue={fmtCompact} ariaLabel="Harness usage comparison over time" /> : <div className="skeleton chart-skeleton" />}
+          </div>
         </div>
       </section>
 
@@ -145,6 +184,7 @@ function aggregateLargestSessions(events: NormalizedUsageEvent[]): Array<{ id: s
 }
 
 function formatDate(iso: string): string { return new Intl.DateTimeFormat("en", { month: "short", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }).format(new Date(iso)); }
+function harnessLabel(value: string): string { return ({ codex: "Codex", pi: "Pi", opencode: "OpenCode", "claude-code": "Claude Code" } as Record<string, string>)[value] ?? value; }
 function shortId(value: string): string { const parts = value.replace(/\\/g, "/").split("/").filter(Boolean); return parts.at(-1) ?? value; }
 function projectLabel(projectId: string, projects: Array<{ id: string; path: string }> | undefined): string { const resolved = projects?.find((project) => project.id === projectId); return shortId(resolved?.path ?? projectId); }
 function Readout({ value, label, detail }: { value: string; label: string; detail: string }) { return <div className="readout"><div className="readout-value">{value}</div><div className="readout-label">{label}</div><div className="readout-detail">{detail}</div></div>; }

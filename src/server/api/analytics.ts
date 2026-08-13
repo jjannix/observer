@@ -22,6 +22,7 @@ export type TimeseriesMetric =
   | "cacheReadInputTokens"
   | "costUsd"
   | "requests";
+export type TimeseriesGroupBy = "provider" | "harness";
 
 export interface TimeseriesPoint {
   date: string; // Berlin calendar day "yyyy-MM-dd"
@@ -31,6 +32,7 @@ export interface TimeseriesPoint {
 
 export interface TimeseriesResponse {
   metric: TimeseriesMetric;
+  groupBy: TimeseriesGroupBy;
   buckets: string[];
   providers: string[];
   points: TimeseriesPoint[];
@@ -240,14 +242,15 @@ export class Analytics {
 
   /**
    * Daily time series bucketed by Europe/Berlin calendar day, grouped by
-   * canonical provider. One value per (day, provider) for the chosen metric.
+   * the requested dimension. One value per (day, series) for the chosen metric.
    * Buckets fill the full range (inclusive of empty days) for stable charting.
    */
-  timeseries(filters: RangeFilters, metric: TimeseriesMetric, timezone = "Europe/Berlin"): TimeseriesResponse {
+  timeseries(filters: RangeFilters, metric: TimeseriesMetric, groupBy: TimeseriesGroupBy = "provider", timezone = "Europe/Berlin"): TimeseriesResponse {
     const { sql, params } = buildWhere(filters);
+    const dimension = groupBy === "harness" ? "e.harness" : "COALESCE(e.canonical_provider_id, 'unknown')";
     const rows = this.db
       .prepare(
-        `SELECT e.occurred_at, COALESCE(e.canonical_provider_id, 'unknown') AS provider,
+        `SELECT e.occurred_at, ${dimension} AS provider,
                 e.processed_tokens, e.processed_input_tokens, e.fresh_input_tokens,
                 e.cache_read_input_tokens, e.output_tokens, e.cost_nano_usd, e.cost_available
          FROM usage_events e ${sql}
@@ -286,7 +289,7 @@ export class Analytics {
       }
     }
 
-    return { metric, buckets, providers, points };
+    return { metric, groupBy, buckets, providers, points };
   }
 }
 

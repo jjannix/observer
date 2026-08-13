@@ -45,6 +45,7 @@ test.describe("Observer UI", () => {
     await expect(page.locator("h1")).toHaveText("Analysis");
     await expect(page.getByText("Cache economics", { exact: true })).toBeVisible();
     await expect(page.getByText("Usage by provider", { exact: true })).toBeVisible();
+    await expect(page.getByText("Usage by harness", { exact: true })).toBeVisible();
   });
 
   test("settings route shows config file location and actions", async ({ page }) => {

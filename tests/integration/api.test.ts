@@ -149,6 +149,10 @@ describe("HTTP API", () => {
     const body = res.json();
     expect(body.harnesses).toContain("pi");
     expect(body.models.length).toBeGreaterThan(0);
+
+    const timeseries = await app.inject({ method: "GET", url: "/api/v1/timeseries?metric=processedTokens&groupBy=harness" });
+    expect(timeseries.statusCode).toBe(200);
+    expect(timeseries.json()).toMatchObject({ groupBy: "harness", providers: ["pi"] });
   });
 
   it("invalid PUT /config is rejected without corrupting prior file", async () => {

@@ -12,6 +12,7 @@ interface Props {
   points: ChartPoint[];
   formatValue: (value: number) => string;
   height?: number;
+  ariaLabel?: string;
 }
 
 export function SignalChart({ buckets, providers, points, formatValue, height = 410 }: Props) {
@@ -110,7 +111,7 @@ export function SignalChart({ buckets, providers, points, formatValue, height = 
   );
 }
 
-export function MultiLineChart({ buckets, providers, points, formatValue, height = 330 }: Props) {
+export function MultiLineChart({ buckets, providers, points, formatValue, height = 330, ariaLabel = "Usage comparison over time" }: Props) {
   const [hover, setHover] = useState<number | null>(null);
   const [hoveredProvider, setHoveredProvider] = useState<string | null>(null);
   const [selectedProvider, setSelectedProvider] = useState<string | null>(null);
@@ -163,7 +164,7 @@ export function MultiLineChart({ buckets, providers, points, formatValue, height
         className="chart"
         viewBox={`0 0 ${width} ${height}`}
         role="img"
-        aria-label="Usage comparison over time"
+        aria-label={ariaLabel}
         onMouseLeave={() => { setHover(null); setHoveredProvider(null); }}
         onMouseMove={(event) => {
           const rect = event.currentTarget.getBoundingClientRect();
