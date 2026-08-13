@@ -144,12 +144,12 @@ export function persistNormalized(
     repo.upsertTurn({ id: turnRowId, sessionId, turnId: envelope.turnId, occurredAt: envelope.occurredAt });
   }
 
-  const providerId = canonicalizeProviderId(envelope.rawProviderId) ?? `unknown:${envelope.harness}`;
+  const providerId = normalized.dims.canonicalProviderId ?? canonicalizeProviderId(envelope.rawProviderId) ?? `unknown:${envelope.harness}`;
   repo.upsertProvider({
     id: providerId,
     rawProviderId: envelope.rawProviderId,
     canonicalProviderId: normalized.dims.canonicalProviderId ?? providerId,
-    display: providerDisplay(envelope.rawProviderId, normalized.dims.canonicalProviderId, []),
+    display: providerDisplay(null, normalized.dims.canonicalProviderId, []),
   });
 
   const modelId = normalized.dims.canonicalModelId ?? envelope.rawModelId ?? `unknown:${envelope.harness}`;

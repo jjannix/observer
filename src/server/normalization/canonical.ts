@@ -47,6 +47,11 @@ const OWNER_BY_MODEL: Record<string, string> = {
   "llama-3.3-70b": "meta",
 };
 
+/** Provider routes that should roll up to the company serving the model. */
+const PROVIDER_ROUTES: Record<string, string> = {
+  "openai-codex": "openai",
+};
+
 export function modelOwner(rawModel: string | null): string | null {
   if (!rawModel) return null;
   const cleaned = stripRoutingPrefix(rawModel).toLowerCase();
@@ -82,7 +87,8 @@ export function modelDisplay(rawModel: string | null, canonicalModelId: string |
 
 export function canonicalizeProviderId(rawProvider: string | null): string | null {
   if (!rawProvider) return null;
-  return rawProvider.trim().toLowerCase();
+  const cleaned = rawProvider.trim().toLowerCase();
+  return PROVIDER_ROUTES[cleaned] ?? cleaned;
 }
 
 export function providerDisplay(

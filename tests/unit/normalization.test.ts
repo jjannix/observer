@@ -9,7 +9,7 @@ import {
   processedTokens,
   safeRatio,
 } from "../../src/server/normalization/metrics.js";
-import { resolveDimensions, canonicalizeModelId, stripRoutingPrefix, modelOwner, resolveProject } from "../../src/server/normalization/canonical.js";
+import { resolveDimensions, canonicalizeModelId, canonicalizeProviderId, stripRoutingPrefix, modelOwner, resolveProject } from "../../src/server/normalization/canonical.js";
 import { SEED_MODEL_ALIASES, SEED_PROVIDER_ALIASES } from "../../src/server/config/schema.js";
 import type { NormalizedUsageEvent } from "../../src/shared/contracts.js";
 
@@ -134,6 +134,25 @@ describe("canonical model keys", () => {
     expect(dims.canonicalModelId).toBe("openai/gpt-5");
     // Provider attribution stays separate.
     expect(dims.canonicalProviderId).toBe("openrouter");
+  });
+});
+
+describe("canonical provider keys", () => {
+  it("rolls the Codex subscription route into OpenAI", () => {
+    expect(canonicalizeProviderId("openai-codex")).toBe("openai");
+    const dims = resolveDimensions({
+      harness: "pi",
+      rawProviderId: "openai-codex",
+      rawModelId: "gpt-5.6-sol",
+      cwd: null,
+      occurredAt: "2026-08-13T00:00:00Z",
+      providerAliases: SEED_PROVIDER_ALIASES,
+      providerOverrides: [],
+      modelAliases: SEED_MODEL_ALIASES,
+    });
+    expect(dims.rawProviderId).toBe("openai-codex");
+    expect(dims.canonicalProviderId).toBe("openai");
+    expect(dims.providerResolution).toBe("seed-alias");
   });
 });
 
