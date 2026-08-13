@@ -83,9 +83,7 @@ h3 { font-size: 13px; }
   gap: 38px;
 }
 .brand { display: inline-flex; align-items: center; gap: 10px; color: var(--fg-0); font-size: 15px; font-weight: 550; letter-spacing: -0.02em; }
-.mark { position: relative; width: 18px; height: 18px; border: 1px solid var(--fg-0); border-radius: 50%; display: inline-grid; place-items: center; }
-.mark::before { content: ""; position: absolute; width: 3px; height: 3px; background: var(--fg-0); border-radius: 50%; }
-.mark span { position: absolute; width: 4px; height: 1px; background: var(--fg-0); right: -2px; top: 8px; }
+.mark { width: 20px; height: 20px; flex: none; }
 .topnav { align-self: stretch; display: flex; align-items: stretch; gap: 28px; }
 .navlink { position: relative; display: flex; align-items: center; color: var(--fg-2); font-size: 13px; transition: color var(--duration) ease; }
 .navlink::after { content: ""; position: absolute; height: 1px; left: 0; right: 0; bottom: -1px; background: var(--accent); opacity: 0; transform: scaleX(.7); transition: opacity var(--duration) ease, transform var(--duration) var(--ease-out); }
