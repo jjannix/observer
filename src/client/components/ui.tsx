@@ -10,6 +10,16 @@ export function fmtCompact(n: number | null | undefined): string {
   return new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 1 }).format(n);
 }
 
+export function fmtCompactPrecise(n: number | null | undefined): string {
+  if (n == null) return "—";
+  if (Math.abs(n) < 1_000) return Math.round(n).toLocaleString("en-US");
+  return new Intl.NumberFormat("en-US", {
+    notation: "compact",
+    minimumFractionDigits: 1,
+    maximumFractionDigits: 1,
+  }).format(n);
+}
+
 export function fmtUsd(n: number | null | undefined): string {
   if (n == null) return "—";
   if (n === 0) return "$0";

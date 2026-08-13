@@ -33,6 +33,11 @@ test.describe("Observer UI", () => {
     await page.goto("/sessions");
     await expect(page.locator("h1")).toHaveText("Sessions");
     await expect(page.getByText("Observed sessions", { exact: true })).toBeVisible();
+    const firstSession = page.locator(".sessions-table tbody tr[role=button]").first();
+    await firstSession.click();
+    await expect(page.getByRole("complementary", { name: /Session/ })).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(page.getByRole("complementary", { name: /Session/ })).toBeHidden();
   });
 
   test("analysis route renders the analytical views", async ({ page }) => {

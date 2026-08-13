@@ -4,7 +4,7 @@ import type { NormalizedUsageEvent } from "@shared/contracts";
 import { api, rangeToFilters } from "../api.js";
 import { FiltersBar, useFilterState } from "../components/Filters.js";
 import { MultiLineChart } from "../components/Chart.js";
-import { COLORS, CompositionBar, fmtCompact, fmtPct, fmtUsd } from "../components/ui.js";
+import { COLORS, CompositionBar, fmtCompact, fmtCompactPrecise, fmtPct, fmtUsd } from "../components/ui.js";
 
 export function Analysis() {
   const [filters, setFilters] = useFilterState();
@@ -98,10 +98,10 @@ export function Analysis() {
             {modelRows.map(({ model, totals: row }) => {
               return <tr key={model.id}>
                 <td><span className="model-id">{model.display}</span></td>
-                <td className="tnum">{fmtCompact(row?.processedTokens)}</td>
-                <td className="tnum">{fmtCompact(row?.freshInputTokens)}</td>
-                <td className="tnum">{fmtCompact(row?.cacheReadInputTokens)}</td>
-                <td className="tnum">{fmtCompact(row?.outputTokens)}</td>
+                <td className="tnum">{fmtCompactPrecise(row?.processedTokens)}</td>
+                <td className="tnum">{fmtCompactPrecise(row?.freshInputTokens)}</td>
+                <td className="tnum">{fmtCompactPrecise(row?.cacheReadInputTokens)}</td>
+                <td className="tnum">{fmtCompactPrecise(row?.outputTokens)}</td>
                 <td className="tnum">{fmtPct(row?.cacheHitRate)}</td>
                 <td className="tnum">{fmtUsd(row?.costUsd)}</td>
               </tr>;
@@ -119,7 +119,7 @@ export function Analysis() {
             {largestSessions.map((session) => <tr key={session.id}>
               <td>{formatDate(session.startedAt)}</td>
               <td><span className="model-id">{session.model}</span></td>
-              <td><span className="project-id">{shortId(session.project)}</span></td>
+              <td><span className="project-id" title={session.project}>{projectLabel(session.project, dims?.projects)}</span></td>
               <td className="tnum">{fmtCompact(session.processed)}</td>
               <td className="tnum">{fmtUsd(session.cost)}</td>
             </tr>)}
@@ -146,4 +146,5 @@ function aggregateLargestSessions(events: NormalizedUsageEvent[]): Array<{ id: s
 
 function formatDate(iso: string): string { return new Intl.DateTimeFormat("en", { month: "short", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }).format(new Date(iso)); }
 function shortId(value: string): string { const parts = value.replace(/\\/g, "/").split("/").filter(Boolean); return parts.at(-1) ?? value; }
+function projectLabel(projectId: string, projects: Array<{ id: string; path: string }> | undefined): string { const resolved = projects?.find((project) => project.id === projectId); return shortId(resolved?.path ?? projectId); }
 function Readout({ value, label, detail }: { value: string; label: string; detail: string }) { return <div className="readout"><div className="readout-value">{value}</div><div className="readout-label">{label}</div><div className="readout-detail">{detail}</div></div>; }

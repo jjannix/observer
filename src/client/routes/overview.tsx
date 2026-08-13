@@ -3,8 +3,8 @@ import { useQueries, useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import { api, rangeToFilters } from "../api.js";
 import { CHART_METRICS, FiltersBar, useFilterState, type FilterState } from "../components/Filters.js";
-import { StackedAreaChart } from "../components/Chart.js";
-import { CompositionBar, COLORS, fmtCompact, fmtInt, fmtPct, fmtUsd } from "../components/ui.js";
+import { SignalChart } from "../components/Chart.js";
+import { CompositionBar, COLORS, fmtCompact, fmtCompactPrecise, fmtInt, fmtPct, fmtUsd } from "../components/ui.js";
 
 const METRIC_FORMATTER: Record<string, (value: number) => string> = {
   processedTokens: fmtCompact,
@@ -68,8 +68,6 @@ export function Overview() {
   const totals = summary?.totals;
   const previousTokens = previous?.totals.processedTokens;
   const change = totals && previousTokens ? totals.processedTokens / previousTokens - 1 : null;
-  const reportedReasoning = totals?.reasoningOutputTokens ?? 0;
-  const unclassifiedOutput = totals ? Math.max(0, totals.outputTokens - reportedReasoning) : 0;
   const modelRows = modelCandidates
     .map((model, index) => ({ model, totals: modelSummaries[index]?.data?.totals }))
     .filter(({ totals: row }) => row == null || row.processedTokens > 0)
@@ -89,7 +87,7 @@ export function Overview() {
         <div className="hero-primary">
           <div className="hero-value">{fmtCompact(totals?.processedTokens)}</div>
           <div className="hero-caption" id="processed-label">tokens processed</div>
-          <div className={`period-change ${change != null && change < 0 ? "negative" : ""}`}>
+          <div className={`period-change${change != null && change < 0 ? " negative" : ""}${change != null && Math.abs(change) >= 0.5 ? " notable" : ""}`}>
             {change == null ? `${fmtInt(totals?.requests)} requests · ${fmtInt(totals?.sessions)} sessions` : `${change >= 0 ? "+" : ""}${fmtPct(change)} vs previous ${rangeLabel(filters.range).replace("last ", "")}`}
           </div>
         </div>
@@ -114,7 +112,7 @@ export function Overview() {
           </div>
         </div>
         {timeseries ? (
-          <StackedAreaChart
+          <SignalChart
             buckets={timeseries.buckets}
             providers={timeseries.providers}
             points={timeseries.points}
@@ -125,18 +123,20 @@ export function Overview() {
 
       <section className="instrument-section composition-section">
         <div className="section-head">
-          <div><h2>Token composition</h2><span className="hint">What made up the observed total</span></div>
-          <Link to="/analysis" className="section-link">Open analysis <span>→</span></Link>
+          <div><h2>Token composition</h2><span className="hint">How processed usage was composed</span></div>
+          <Link to="/analysis" className="section-link">Token analysis <span>→</span></Link>
+        </div>
+        <div className="composition-focus">
+          <strong>{fmtPct(totals?.cacheHitRate)}</strong>
+          <span>cached input</span>
         </div>
         <CompositionBar
           total={totals?.processedTokens ?? 0}
           segments={[
             { label: "Cached input", value: totals?.cacheReadInputTokens ?? 0, color: COLORS.cacheRead },
             { label: "Uncached input", value: totals?.freshInputTokens ?? 0, color: COLORS.fresh },
-            { label: "Cache write", value: totals?.cacheWriteInputTokens ?? 0, color: COLORS.cacheWrite },
-            { label: "Output", value: unclassifiedOutput, color: COLORS.output },
-            { label: "Reasoning", value: reportedReasoning, color: COLORS.reasoning },
-            { label: "Unattributed", value: totals?.unattributedTokens ?? 0, color: COLORS.unattributed },
+            { label: "Output", value: totals?.outputTokens ?? 0, color: COLORS.output },
+            { label: "Other", value: (totals?.cacheWriteInputTokens ?? 0) + (totals?.unattributedTokens ?? 0), color: COLORS.unattributed },
           ]}
         />
       </section>
@@ -150,9 +150,9 @@ export function Overview() {
               {modelRows.map(({ model, totals: row }) => {
                 return <tr key={model.id}>
                   <td><span className="model-id">{model.display}</span></td>
-                  <td className="tnum">{fmtCompact(row?.processedTokens)}</td>
-                  <td className="tnum">{fmtCompact(row?.processedInputTokens)}</td>
-                  <td className="tnum">{fmtCompact(row?.outputTokens)}</td>
+                  <td className="tnum">{fmtCompactPrecise(row?.processedTokens)}</td>
+                  <td className="tnum">{fmtCompactPrecise(row?.processedInputTokens)}</td>
+                  <td className="tnum">{fmtCompactPrecise(row?.outputTokens)}</td>
                   <td className="tnum">{fmtPct(row?.cacheHitRate)}</td>
                   <td className="tnum">{fmtUsd(row?.costUsd)}</td>
                 </tr>

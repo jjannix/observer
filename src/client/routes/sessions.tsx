@@ -3,7 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import type { NormalizedUsageEvent } from "@shared/contracts";
 import { api, rangeToFilters } from "../api.js";
 import { FiltersBar, useFilterState } from "../components/Filters.js";
-import { COLORS, CompositionBar, fmtCompact, fmtInt, fmtUsd } from "../components/ui.js";
+import { fmtCompact, fmtInt, fmtPct, fmtUsd } from "../components/ui.js";
 
 interface SessionRow {
   id: string;
@@ -42,11 +42,18 @@ export function Sessions() {
   const { data: summary } = useQuery({ queryKey: ["summary", range], queryFn: () => api.summary(range) });
   const { data, isFetching } = useQuery({ queryKey: ["sessions", range], queryFn: () => api.events(range, null, 250) });
   const sessions = useMemo(() => groupSessions(data?.items ?? []), [data?.items]);
-  const selected = sessions.find((session) => session.id === selectedId) ?? sessions[0] ?? null;
+  const selected = sessions.find((session) => session.id === selectedId) ?? null;
 
   useEffect(() => {
-    if (sessions.length > 0 && !sessions.some((session) => session.id === selectedId)) setSelectedId(sessions[0].id);
+    if (selectedId && !sessions.some((session) => session.id === selectedId)) setSelectedId(null);
   }, [selectedId, sessions]);
+
+  useEffect(() => {
+    if (!selectedId) return;
+    const closeOnEscape = (event: KeyboardEvent) => { if (event.key === "Escape") setSelectedId(null); };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [selectedId]);
 
   const medians = useMemo(() => ({
     processed: median(sessions.map((session) => session.processed)),
@@ -75,78 +82,77 @@ export function Sessions() {
 
       <section className="instrument-section sessions-list">
         <div className="section-head"><div><h2>Observed sessions</h2><span className="hint">{fmtInt(sessions.length)} loaded · select a row to inspect</span></div></div>
-        <div className="table-scroll">
-          <table className="data instrument-table sessions-table">
-            <thead><tr><th>Started</th><th>Harness</th><th>Model</th><th>Project</th><th>Processed</th><th>Output</th><th>Cost</th><th>Duration</th></tr></thead>
-            <tbody>
-              {sessions.map((session) => (
-                <tr
-                  key={session.id}
-                  className={selected?.id === session.id ? "selected" : ""}
-                  role="button"
-                  tabIndex={0}
-                  onClick={() => setSelectedId(session.id)}
-                  onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") setSelectedId(session.id); }}
-                >
-                  <td>{formatStarted(session.startedAt)}</td>
-                  <td>{harnessLabel(session.harness)}</td>
-                  <td><span className="model-id">{session.model}</span></td>
-                  <td><span className="project-id">{shortId(session.project)}</span></td>
-                  <td className="tnum">{fmtCompact(session.processed)}</td>
-                  <td className="tnum">{fmtCompact(session.output)}</td>
-                  <td className="tnum">{fmtUsd(session.cost)}</td>
-                  <td className="tnum">{formatDuration(durationMs(session))}</td>
-                </tr>
-              ))}
-              {!isFetching && sessions.length === 0 && <tr><td colSpan={8} className="empty">No observations in this period.</td></tr>}
-            </tbody>
-          </table>
+        <div className={`sessions-workspace${selected ? " has-inspector" : ""}`}>
+          <div className="table-scroll">
+            <table className="data instrument-table sessions-table">
+              <thead><tr><th>Started</th><th>Session</th><th>Project</th><th>Processed</th><th>Cost</th><th>Duration</th></tr></thead>
+              <tbody>
+                {sessions.map((session) => (
+                  <tr
+                    key={session.id}
+                    className={selected?.id === session.id ? "selected" : ""}
+                    role="button"
+                    aria-selected={selected?.id === session.id}
+                    tabIndex={0}
+                    onClick={() => setSelectedId(session.id)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" || event.key === " ") {
+                        event.preventDefault();
+                        setSelectedId(session.id);
+                      }
+                    }}
+                  >
+                    <td>{formatStarted(session.startedAt)}</td>
+                    <td><span className="session-agent"><strong>{harnessLabel(session.harness)}</strong><small className="model-id">{session.model}</small></span></td>
+                    <td><span className="project-id" title={session.project}>{projectLabel(session.project, dims?.projects)}</span></td>
+                    <td className="tnum">{fmtCompact(session.processed)}</td>
+                    <td className="tnum">{fmtUsd(session.cost)}</td>
+                    <td className="tnum">{formatDuration(durationMs(session))}</td>
+                  </tr>
+                ))}
+                {!isFetching && sessions.length === 0 && <tr><td colSpan={6} className="empty">No observations in this period.</td></tr>}
+              </tbody>
+            </table>
+          </div>
+          {selected && <SessionInspector session={selected} project={projectLabel(selected.project, dims?.projects)} onClose={() => setSelectedId(null)} />}
         </div>
       </section>
-
-      {selected && <SessionInspector session={selected} />}
     </div>
   );
 }
 
-function SessionInspector({ session }: { session: SessionRow }) {
-  const visibleOutput = Math.max(0, session.output - session.reasoning);
+function SessionInspector({ session, project, onClose }: { session: SessionRow; project: string; onClose: () => void }) {
+  const cacheHitRate = session.input > 0 ? session.cached / session.input : null;
   return (
-    <section className="instrument-section session-inspector">
-      <div className="section-head inspector-head">
-        <div><h2>{formatStarted(session.startedAt)}</h2><span className="hint model-id">{session.id}</span></div>
-        <span className="hint">{fmtInt(session.events.length)} normalized events</span>
+    <aside className="session-inspector" aria-label={`Session ${formatStarted(session.startedAt)}`}>
+      <div className="inspector-head">
+        <div><span className="inspector-eyebrow">Session</span><h2>{formatStarted(session.startedAt)}</h2></div>
+        <button type="button" className="inspector-close" onClick={onClose} aria-label="Close session inspector">×</button>
       </div>
-      <div className="inspector-readings">
-        <Readout value={fmtCompact(session.processed)} label="processed" />
-        <Readout value={fmtCompact(session.cached)} label="cached input" />
-        <Readout value={fmtCompact(session.fresh)} label="uncached input" />
+      <div className="inspector-identity">
+        <strong>{harnessLabel(session.harness)}</strong>
+        <span className="model-id">{session.model}</span>
+        <span className="project-id" title={session.project}>{project}</span>
+      </div>
+      <div className="inspector-primary"><strong>{fmtCompact(session.processed)}</strong><span>processed tokens</span></div>
+      <div className="inspector-stats">
         <Readout value={fmtCompact(session.output)} label="output" />
+        <Readout value={formatDuration(durationMs(session))} label="duration" />
+        <Readout value={fmtUsd(session.cost)} label="estimated cost" />
       </div>
-      <CompositionBar
-        total={session.processed}
-        segments={[
-          { label: "Cached input", value: session.cached, color: COLORS.cacheRead },
-          { label: "Uncached input", value: session.fresh, color: COLORS.fresh },
-          { label: "Output", value: visibleOutput, color: COLORS.output },
-          { label: "Reasoning", value: session.reasoning, color: COLORS.reasoning },
-        ]}
-      />
-      <div className="inspector-grid">
-        <dl className="session-metadata">
-          <div><dt>Harness</dt><dd>{harnessLabel(session.harness)}</dd></div>
-          <div><dt>Model</dt><dd className="model-id">{session.model}</dd></div>
-          <div><dt>Project</dt><dd className="project-id">{shortId(session.project)}</dd></div>
-          <div><dt>Provider</dt><dd>{session.provider}</dd></div>
-          <div><dt>Started</dt><dd>{formatTimestamp(session.startedAt)}</dd></div>
-          <div><dt>Duration</dt><dd>{formatDuration(durationMs(session))}</dd></div>
-        </dl>
-        <div className="session-timeline">
-          <h3>Session timeline</h3>
-          {timelineEvents(session).map((event) => <div key={`${event.label}-${event.time}`} className="timeline-event"><i /><span><strong>{event.label}</strong><small>{fmtClock(event.time)}{event.detail ? ` · ${event.detail}` : ""}</small></span></div>)}
-        </div>
+      <dl className="session-metadata">
+        <div><dt>Provider</dt><dd>{session.provider}</dd></div>
+        <div><dt>Cache hit</dt><dd>{fmtPct(cacheHitRate)}</dd></div>
+        <div><dt>Uncached input</dt><dd>{fmtCompact(session.fresh)}</dd></div>
+        <div><dt>Observed events</dt><dd>{fmtInt(session.events.length)}</dd></div>
+        <div><dt>Started</dt><dd>{formatTimestamp(session.startedAt)}</dd></div>
+        <div><dt>Project ID</dt><dd className="project-id" title={session.project}>{session.project}</dd></div>
+      </dl>
+      <div className="inspector-raw">
+        <span>Session ID</span>
+        <code title={session.id}>{session.id}</code>
       </div>
-    </section>
+    </aside>
   );
 }
 
@@ -180,24 +186,15 @@ function groupSessions(events: NormalizedUsageEvent[]): SessionRow[] {
   }).sort((a, b) => Date.parse(b.startedAt) - Date.parse(a.startedAt));
 }
 
-function timelineEvents(session: SessionRow): Array<{ label: string; time: string; detail?: string }> {
-  const events = session.events;
-  if (events.length === 1) return [{ label: "Observed", time: events[0].occurredAt, detail: fmtCompact(events[0].processedTokens) }];
-  const peak = [...events].sort((a, b) => b.processedTokens - a.processedTokens)[0];
-  return [
-    { label: "Started", time: events[0].occurredAt },
-    { label: "First usage", time: events[Math.min(1, events.length - 1)].occurredAt },
-    { label: "Peak context", time: peak.occurredAt, detail: fmtCompact(peak.processedTokens) },
-    { label: "Last observation", time: events.at(-1)!.occurredAt },
-  ];
-}
-
 function sum(events: NormalizedUsageEvent[], select: (event: NormalizedUsageEvent) => number): number { return events.reduce((total, event) => total + select(event), 0); }
 function durationMs(session: SessionRow): number { return Math.max(0, Date.parse(session.finishedAt) - Date.parse(session.startedAt)); }
 function median(values: number[]): number { if (values.length === 0) return 0; const ordered = [...values].sort((a, b) => a - b); const middle = Math.floor(ordered.length / 2); return ordered.length % 2 ? ordered[middle] : (ordered[middle - 1] + ordered[middle]) / 2; }
 function harnessLabel(value: string): string { return ({ codex: "Codex", pi: "Pi", opencode: "OpenCode", "claude-code": "Claude Code" } as Record<string, string>)[value] ?? value; }
 function shortId(value: string): string { const parts = value.replace(/\\/g, "/").split("/").filter(Boolean); return parts.at(-1) ?? value; }
-function fmtClock(iso: string): string { return new Intl.DateTimeFormat("en", { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false }).format(new Date(iso)); }
+function projectLabel(projectId: string, projects: Array<{ id: string; path: string }> | undefined): string {
+  const resolved = projects?.find((project) => project.id === projectId);
+  return shortId(resolved?.path ?? projectId);
+}
 function formatTimestamp(iso: string): string { return new Intl.DateTimeFormat("en", { month: "short", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }).format(new Date(iso)); }
 function formatStarted(iso: string): string { const date = new Date(iso); const now = new Date(); const day = date.toDateString() === now.toDateString() ? "Today" : new Intl.DateTimeFormat("en", { month: "short", day: "2-digit" }).format(date); return `${day}, ${new Intl.DateTimeFormat("en", { hour: "2-digit", minute: "2-digit", hour12: false }).format(date)}`; }
 function formatDuration(ms: number): string { if (!Number.isFinite(ms) || ms <= 0) return "<1m"; const minutes = Math.max(1, Math.round(ms / 60_000)); return minutes < 60 ? `${minutes}m` : `${Math.floor(minutes / 60)}h ${String(minutes % 60).padStart(2, "0")}m`; }

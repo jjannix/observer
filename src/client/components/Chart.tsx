@@ -14,7 +14,7 @@ interface Props {
   height?: number;
 }
 
-export function StackedAreaChart({ buckets, providers, points, formatValue, height = 410 }: Props) {
+export function SignalChart({ buckets, providers, points, formatValue, height = 410 }: Props) {
   const [hover, setHover] = useState<number | null>(null);
   const width = 1200;
   const padL = 66;
@@ -45,6 +45,8 @@ export function StackedAreaChart({ buckets, providers, points, formatValue, heig
   const labelStep = Math.max(1, Math.ceil(buckets.length / 5));
   const hoverY = hover == null ? 0 : y(dailyTotal[hover]);
   const signalPoints = dailyTotal.map((value, index) => [x(index), y(value)] as [number, number]);
+  const signalPath = smoothLinePath(signalPoints);
+  const signalAreaPath = `${signalPath} L${signalPoints.at(-1)?.[0].toFixed(1)},${(padT + plotH).toFixed(1)} L${signalPoints[0][0].toFixed(1)},${(padT + plotH).toFixed(1)} Z`;
 
   return (
     <div className="telemetry-chart">
@@ -61,6 +63,14 @@ export function StackedAreaChart({ buckets, providers, points, formatValue, heig
           setHover(Math.max(0, Math.min(buckets.length - 1, index)));
         }}
       >
+        <defs>
+          <linearGradient id="signal-area-gradient" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="#afcbff" stopOpacity="0.18" />
+            <stop offset="45%" stopColor="#afcbff" stopOpacity="0.13" />
+            <stop offset="80%" stopColor="#afcbff" stopOpacity="0.045" />
+            <stop offset="100%" stopColor="#afcbff" stopOpacity="0.01" />
+          </linearGradient>
+        </defs>
         <g className="grid">
           {ticks.map((tick) => <line key={tick} x1={padL} x2={width - padR} y1={y(tick)} y2={y(tick)} />)}
         </g>
@@ -70,8 +80,8 @@ export function StackedAreaChart({ buckets, providers, points, formatValue, heig
             <text key={date} x={x(index)} y={height - 6} textAnchor={index === 0 ? "start" : index === buckets.length - 1 ? "end" : "middle"}>{fmtDay(date)}</text>
           ) : null)}
         </g>
-        <path className="signal-fill" d={areaPath(signalPoints, padT + plotH)} />
-        <path className="signal" d={smoothLinePath(signalPoints)} vectorEffect="non-scaling-stroke" />
+        <path className="signal-area" d={signalAreaPath} fill="url(#signal-area-gradient)" />
+        <path className="signal" d={signalPath} vectorEffect="non-scaling-stroke" />
         {hover != null && (
           <g className="crosshair">
             <line x1={x(hover)} x2={x(hover)} y1={padT} y2={padT + plotH} vectorEffect="non-scaling-stroke" />
@@ -102,6 +112,8 @@ export function StackedAreaChart({ buckets, providers, points, formatValue, heig
 
 export function MultiLineChart({ buckets, providers, points, formatValue, height = 330 }: Props) {
   const [hover, setHover] = useState<number | null>(null);
+  const [hoveredProvider, setHoveredProvider] = useState<string | null>(null);
+  const [selectedProvider, setSelectedProvider] = useState<string | null>(null);
   const width = 1200;
   const padL = 58;
   const padR = 8;
@@ -126,22 +138,45 @@ export function MultiLineChart({ buckets, providers, points, formatValue, height
   const y = (value: number) => padT + plotH - (value / maxValue) * plotH;
   const ticks = [0, 0.5, 1].map((fraction) => Math.round(maxValue * fraction));
   const labelStep = Math.max(1, Math.ceil(buckets.length / 4));
+  const focusedProvider = hoveredProvider ?? selectedProvider;
 
   return (
     <div className="telemetry-chart comparison-chart">
       <div className="chart-legend">
-        {ordered.map((provider, index) => <span key={provider}><i className={`series-key series-${index}`} />{provider}</span>)}
+        {ordered.map((provider, index) => (
+          <button
+            type="button"
+            key={provider}
+            className={focusedProvider === provider ? "focused" : ""}
+            aria-pressed={selectedProvider === provider}
+            onMouseEnter={() => setHoveredProvider(provider)}
+            onMouseLeave={() => setHoveredProvider(null)}
+            onFocus={() => setHoveredProvider(provider)}
+            onBlur={() => setHoveredProvider(null)}
+            onClick={() => setSelectedProvider((current) => current === provider ? null : provider)}
+          >
+            <i className={`series-key series-${index}`} />{provider}
+          </button>
+        ))}
       </div>
       <svg
         className="chart"
         viewBox={`0 0 ${width} ${height}`}
         role="img"
         aria-label="Usage comparison over time"
-        onMouseLeave={() => setHover(null)}
+        onMouseLeave={() => { setHover(null); setHoveredProvider(null); }}
         onMouseMove={(event) => {
           const rect = event.currentTarget.getBoundingClientRect();
           const pointerX = ((event.clientX - rect.left) / rect.width) * width;
-          setHover(Math.max(0, Math.min(buckets.length - 1, Math.round(((pointerX - padL) / plotW) * (buckets.length - 1)))));
+          const pointerY = ((event.clientY - rect.top) / rect.height) * height;
+          const pointIndex = Math.max(0, Math.min(buckets.length - 1, Math.round(((pointerX - padL) / plotW) * (buckets.length - 1))));
+          const nearestProvider = ordered.reduce((nearest, provider, providerIndex) => {
+            if (nearest == null) return provider;
+            const nearestIndex = ordered.indexOf(nearest);
+            return Math.abs(y(values[providerIndex][pointIndex]) - pointerY) < Math.abs(y(values[nearestIndex][pointIndex]) - pointerY) ? provider : nearest;
+          }, null as string | null);
+          setHover(pointIndex);
+          setHoveredProvider(nearestProvider);
         }}
       >
         <g className="grid">{ticks.map((tick) => <line key={tick} x1={padL} x2={width - padR} y1={y(tick)} y2={y(tick)} />)}</g>
@@ -149,24 +184,17 @@ export function MultiLineChart({ buckets, providers, points, formatValue, height
           {ticks.map((tick) => <text key={tick} x={padL - 10} y={y(tick) + 4} textAnchor="end">{formatValue(tick)}</text>)}
           {buckets.map((date, index) => index % labelStep === 0 || index === buckets.length - 1 ? <text key={date} x={x(index)} y={height - 5} textAnchor="middle">{fmtDay(date)}</text> : null)}
         </g>
-        {values.map((series, index) => <path key={ordered[index]} className={`comparison-signal series-${index}`} d={smoothLinePath(series.map((value, pointIndex) => [x(pointIndex), y(value)]))} vectorEffect="non-scaling-stroke" />)}
+        {values.map((series, index) => <path key={ordered[index]} className={`comparison-signal series-${index}${focusedProvider === ordered[index] ? " focused" : focusedProvider ? " subdued" : ""}`} d={smoothLinePath(series.map((value, pointIndex) => [x(pointIndex), y(value)]))} vectorEffect="non-scaling-stroke" />)}
         {hover != null && <g className="crosshair"><line x1={x(hover)} x2={x(hover)} y1={padT} y2={padT + plotH} /></g>}
       </svg>
       {hover != null && (
         <div className="tip comparison-tip" style={{ left: `${(x(hover) / width) * 100}%`, top: 48, transform: hover > buckets.length * 0.7 ? "translateX(-100%)" : "translateX(10px)" }}>
           <div className="t-date">{fmtFullDay(buckets[hover])}</div>
-          {ordered.map((provider, index) => <div key={provider} className="t-row"><span>{provider}</span><span>{formatValue(values[index][hover])}</span></div>)}
+          {ordered.map((provider, index) => <div key={provider} className={`t-row${focusedProvider === provider ? " focused" : ""}`}><span>{provider}</span><span>{formatValue(values[index][hover])}</span></div>)}
         </div>
       )}
     </div>
   );
-}
-
-function areaPath(points: Array<[number, number]>, baseline: number): string {
-  if (points.length === 0) return "";
-  const [firstX] = points[0];
-  const [lastX] = points[points.length - 1];
-  return `${smoothLinePath(points)} L${lastX.toFixed(1)},${baseline.toFixed(1)} L${firstX.toFixed(1)},${baseline.toFixed(1)} Z`;
 }
 
 function smoothLinePath(points: Array<[number, number]>): string {
