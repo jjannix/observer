@@ -368,15 +368,13 @@ table.data tbody tr { transition: background-color var(--duration) ease; }
 .analysis-readings { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); margin-top: 20px; }
 .analysis-readings .readout { min-height: 100px; padding: 5px 0; }
 .analysis-readings .readout-value { font-size: clamp(32px, 3vw, 46px); }
-.economics-and-chart { display: grid; grid-template-columns: minmax(280px, .72fr) minmax(0, 1.55fr); gap: 72px; }
-.comparison-panel { min-width: 0; }
-.cost-lines { margin-top: 20px; border-bottom: 1px solid var(--border); }
-.cost-lines div { display: flex; justify-content: space-between; align-items: center; min-height: 48px; border-top: 1px solid var(--border); color: var(--fg-2); font-size: 12px; }
-.cost-lines strong { color: var(--fg-1); font-weight: 400; }
-.savings-readout { display: flex; flex-direction: column; gap: 4px; margin-top: 26px; }
-.savings-readout strong { color: var(--fg-0); font-size: 32px; font-weight: 500; letter-spacing: -.025em; }
-.savings-readout span { color: var(--accent); font-size: 12px; }
-.calculation-note { max-width: 410px; color: var(--fg-3); font-size: 10px; margin-top: 26px; }
+.economics-readings { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 64px; max-width: 1100px; padding-top: 12px; }
+.economics-metric { display: flex; flex-direction: column; gap: 7px; }
+.economics-metric strong { color: var(--fg-0); font-size: clamp(28px, 2.5vw, 38px); font-weight: 500; line-height: 1; letter-spacing: -.03em; font-variant-numeric: tabular-nums; }
+.economics-metric span { color: var(--fg-2); font-size: 11px; }
+.economics-metric.savings strong { color: var(--accent); }
+.calculation-note { max-width: 620px; color: var(--fg-3); font-size: 10px; margin-top: 26px; }
+.provider-section { min-width: 0; }
 
 .harness-comparison-layout { display: grid; grid-template-columns: minmax(270px, .62fr) minmax(0, 1.38fr); gap: 72px; align-items: start; }
 .harness-breakdown { padding-top: 24px; }
@@ -451,8 +449,6 @@ table.data tbody tr { transition: background-color var(--duration) ease; }
   .hero-readout { grid-template-columns: 1fr; gap: 24px; }
   .secondary-readings { padding-top: 24px; border-top: 1px solid var(--border); }
   .secondary-readings, .session-medians, .inspector-readings { grid-template-columns: repeat(2, minmax(0, 1fr)); row-gap: 28px; }
-  .economics-and-chart { grid-template-columns: 1fr; }
-  .comparison-panel { padding: 24px 0 0; border-top: 1px solid var(--border); border-left: 0; }
   .harness-comparison-layout { grid-template-columns: 1fr; gap: 28px; }
   .harness-breakdown { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 28px; padding-top: 4px; }
   .harness-row + .harness-row { padding-top: 0; border-top: 0; }
@@ -478,6 +474,8 @@ table.data tbody tr { transition: background-color var(--duration) ease; }
   .secondary-readings, .session-medians, .inspector-readings, .analysis-readings { grid-template-columns: 1fr 1fr; }
   .secondary-readings .readout, .session-medians .readout, .analysis-readings .readout { padding-left: 0; border-left: 0; }
   .analysis-readings .readout:nth-child(3) { grid-column: 1 / -1; padding-top: 18px; border-top: 1px solid var(--border); }
+  .economics-readings { grid-template-columns: 1fr 1fr; gap: 28px; }
+  .economics-metric.savings { grid-column: 1 / -1; }
   .instrument-section { margin-top: 32px; padding: 24px 2px 0; }
   .analysis-efficiency { padding: 24px 2px 30px; }
   .surface.pad { padding: 24px 2px; }

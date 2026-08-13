@@ -93,20 +93,19 @@ export function Analysis() {
         ]} />
       </section>
 
-      <section className="instrument-section economics-and-chart">
-        <div className="cache-economics">
-          <div className="section-head"><div><h2>Cache economics</h2><span className="hint">Estimated from observed effective cost</span></div></div>
-          <div className="cost-lines">
-            <div><span>Equivalent uncached cost</span><strong>{fmtUsd(rawCost)}</strong></div>
-            <div><span>Actual estimated cost</span><strong>{fmtUsd(totals?.costUsd)}</strong></div>
-          </div>
-          <div className="savings-readout"><strong>{fmtUsd(saved)}</strong><span>estimated savings through caching</span></div>
-          <p className="calculation-note">The uncached equivalent scales observed cost by the uncached input share. It is directional, not an invoice.</p>
+      <section className="instrument-section cache-economics">
+        <div className="section-head"><div><h2>Cache economics</h2><span className="hint">Estimated from observed effective cost</span></div></div>
+        <div className="economics-readings">
+          <div className="economics-metric"><strong>{fmtUsd(rawCost)}</strong><span>equivalent uncached cost</span></div>
+          <div className="economics-metric"><strong>{fmtUsd(totals?.costUsd)}</strong><span>actual estimated cost</span></div>
+          <div className="economics-metric savings"><strong>{fmtUsd(saved)}</strong><span>estimated savings through caching</span></div>
         </div>
-        <div className="comparison-panel">
-          <div className="section-head"><div><h2>Usage by provider</h2><span className="hint">Daily processed-token signals</span></div></div>
-          {timeseries ? <MultiLineChart buckets={timeseries.buckets} providers={timeseries.providers} points={timeseries.points} formatValue={fmtCompact} /> : <div className="skeleton chart-skeleton" />}
-        </div>
+        <p className="calculation-note">The uncached equivalent scales observed cost by the uncached input share. It is directional, not an invoice.</p>
+      </section>
+
+      <section className="instrument-section provider-section">
+        <div className="section-head"><div><h2>Usage by provider</h2><span className="hint">Daily processed-token signals</span></div></div>
+        {timeseries ? <MultiLineChart buckets={timeseries.buckets} providers={timeseries.providers} points={timeseries.points} formatValue={fmtCompact} /> : <div className="skeleton chart-skeleton" />}
       </section>
 
       <section className="instrument-section harness-section">
