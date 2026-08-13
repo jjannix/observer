@@ -4,6 +4,7 @@ import { Link } from "react-router-dom";
 import { api, rangeToFilters } from "../api.js";
 import { CHART_METRICS, FiltersBar, useFilterState, type FilterState } from "../components/Filters.js";
 import { SignalChart } from "../components/Chart.js";
+import { MetricSelect } from "../components/MetricSelect.js";
 import { CompositionBar, COLORS, fmtCompact, fmtCompactPrecise, fmtInt, fmtPct, fmtUsd } from "../components/ui.js";
 
 const METRIC_FORMATTER: Record<string, (value: number) => string> = {
@@ -105,11 +106,11 @@ export function Overview() {
             <h2>Usage over time</h2>
             <span className="hint">Daily observations · {rangeLabel(filters.range)}</span>
           </div>
-          <div className="select-wrap metric-select">
-            <select aria-label="Chart metric" value={chartMetric} onChange={(event) => setFilters({ ...filters, chartMetric: event.target.value })}>
-              {CHART_METRICS.map((metric) => <option key={metric.id} value={metric.id}>{metric.label}</option>)}
-            </select>
-          </div>
+          <MetricSelect
+            value={chartMetric}
+            options={CHART_METRICS}
+            onChange={(value) => setFilters({ ...filters, chartMetric: value })}
+          />
         </div>
         {timeseries ? (
           <SignalChart
