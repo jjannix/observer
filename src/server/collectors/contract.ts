@@ -37,9 +37,15 @@ export interface QuarantineEmit {
   partial: Partial<TokenUsageRecord> | null;
 }
 
+export interface DuplicateEmit {
+  lineOrdinal: number;
+  reason: string;
+}
+
 export type CollectEmit =
   | { kind: "usage"; usage: UsageEmit }
   | { kind: "node"; node: MessageNodeEmit }
+  | { kind: "duplicate"; duplicate: DuplicateEmit }
   | { kind: "quarantine"; quarantine: QuarantineEmit };
 
 export interface CollectResult {

@@ -271,6 +271,7 @@ export class SyncEngine {
         lineOrdinal: emit.quarantine.lineOrdinal,
         envelopeHash: hash,
         parserVersion: collector.adapterVersion,
+        requestId: null,
         occurredAt: new Date().toISOString(),
         status: "quarantined",
         envelopeJson: JSON.stringify({ reason: emit.quarantine.reason, partial: emit.quarantine.partial ?? null }),
@@ -280,17 +281,37 @@ export class SyncEngine {
       return { imported: 0, duplicates: 0, quarantined: inserted ? 1 : 0 };
     }
 
+    if (emit.kind === "duplicate") {
+      const hash = `duplicate:${emit.duplicate.reason}:${file.logicalSessionId}:${emit.duplicate.lineOrdinal}`;
+      const { inserted } = this.repo.insertRawRecord({
+        sourceId: source.id,
+        sourceFileId,
+        logicalSessionId: file.logicalSessionId,
+        lineOrdinal: emit.duplicate.lineOrdinal,
+        envelopeHash: hash,
+        parserVersion: collector.adapterVersion,
+        requestId: null,
+        occurredAt: new Date().toISOString(),
+        status: "duplicate",
+        envelopeJson: JSON.stringify({ reason: emit.duplicate.reason }),
+        qualityFlagsJson: JSON.stringify(["duplicate-telemetry"]),
+        createdAt: new Date().toISOString(),
+      });
+      return { imported: 0, duplicates: inserted ? 1 : 0, quarantined: 0 };
+    }
+
     const envelope = emit.usage.envelope;
     const cutoff = config.historyCutoff;
     const withinCutoff = cutoff == null || envelope.occurredAt >= cutoff;
 
-    const { inserted } = this.repo.insertRawRecord({
+    const { inserted, id: rawRecordId } = this.repo.insertRawRecord({
       sourceId: source.id,
       sourceFileId,
       logicalSessionId: envelope.logicalSessionId,
       lineOrdinal: envelope.lineOrdinal,
       envelopeHash: envelope.envelopeHash,
       parserVersion: collector.adapterVersion,
+      requestId: envelope.requestId,
       occurredAt: envelope.occurredAt,
       status: "normalized",
       envelopeJson: JSON.stringify(envelope),
@@ -301,11 +322,23 @@ export class SyncEngine {
       return { imported: 0, duplicates: 1, quarantined: 0 };
     }
 
+    // A newer snapshot for the same response supersedes any version a previous
+    // sync batch stored as `normalized` (the collector only dedupes within one
+    // batch). Mark those as duplicates so renormalize replays a single version.
+    const superseded = rawRecordId != null
+      ? this.repo.supersedePriorNormalizedRawRecords({
+          sourceId: source.id,
+          logicalSessionId: envelope.logicalSessionId,
+          requestId: envelope.requestId,
+          keepId: rawRecordId,
+        })
+      : 0;
+
     if (withinCutoff) {
       const normalized = normalizeEnvelope(envelope as RawUsageEnvelope, config);
       persistNormalized(this.repo, envelope as RawUsageEnvelope, normalized);
     }
-    return { imported: 1, duplicates: 0, quarantined: 0 };
+    return { imported: 1, duplicates: superseded, quarantined: 0 };
   }
 
   private repoTx<T>(fn: () => T): { ok: true; value: T } | { ok: false; error: string } {
@@ -326,10 +359,21 @@ export class SyncEngine {
       const config = this.getConfig();
       this.repo.createSyncRun({ id: runId, trigger: "renormalize", startedAt: new Date().toISOString(), total: 1 });
       this.repo.clearAllNormalized();
+      // `listAllRawRecords` is ordered by id (insertion order).
       const all = this.repo.listAllRawRecords();
+
+      // Deterministically collapse superseded snapshots: for each API request
+      // keep only the last-stored (final) normalized row and mark earlier
+      // versions as duplicates. This makes renormalize idempotent and
+      // order-independent even when stale and final snapshots were both stored
+      // as `normalized` (e.g. cross-batch supersession or pre-fix data).
+      const staleIds = collapseSupersededSnapshots(all);
+      if (staleIds.length > 0) this.repo.markRawRecordsDuplicate(staleIds);
+      const stale = new Set(staleIds);
+
       let i = 0;
       for (const row of all) {
-        if (row.normalization_status !== "normalized") continue;
+        if (stale.has(row.id) || row.normalization_status !== "normalized") continue;
         const envelope = JSON.parse(row.envelope_json) as RawUsageEnvelope;
         if (config.historyCutoff != null && envelope.occurredAt < config.historyCutoff) continue;
         const normalized = normalizeEnvelope(envelope, config);
@@ -352,4 +396,30 @@ export class SyncEngine {
     });
     return { runId, status: "started" };
   }
+}
+
+/**
+ * Find raw snapshot ids that a newer stored snapshot has superseded for the
+ * same API request. Returns every `normalized` row except the last-stored one
+ * (max id) per (source, logical session, request id). Rows without a request
+ * id (duplicates/quarantine, or legacy data) are left untouched.
+ */
+function collapseSupersededSnapshots(rows: any[]): number[] {
+  const latest = new Map<string, number>();
+  for (const row of rows) {
+    if (row.normalization_status !== "normalized") continue;
+    if (!row.request_id) continue;
+    const key = `${row.source_id}\u0000${row.logical_session_id}\u0000${row.request_id}`;
+    const prev = latest.get(key);
+    if (prev === undefined || row.id > prev) latest.set(key, row.id);
+  }
+  if (latest.size === 0) return [];
+  const keep = new Set(latest.values());
+  const stale: number[] = [];
+  for (const row of rows) {
+    if (row.normalization_status !== "normalized") continue;
+    if (!row.request_id) continue;
+    if (!keep.has(row.id)) stale.push(row.id);
+  }
+  return stale;
 }

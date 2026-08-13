@@ -55,6 +55,9 @@ const PROVIDER_ROUTES: Record<string, string> = {
 export function modelOwner(rawModel: string | null): string | null {
   if (!rawModel) return null;
   const cleaned = stripRoutingPrefix(rawModel).toLowerCase();
+  // Anthropic model ids frequently carry dated or point-release suffixes
+  // (for example claude-opus-4-6 or claude-sonnet-4-5-20250929).
+  if (cleaned.startsWith("claude-")) return "anthropic";
   return OWNER_BY_MODEL[cleaned] ?? null;
 }
 

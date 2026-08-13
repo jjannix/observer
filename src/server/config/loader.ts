@@ -53,7 +53,19 @@ export function loadConfig(configPath: string): LoadResult {
     };
   }
 
-  return { config: result.data, created: false };
+  const config = result.data;
+  // Version 1 configs predate the Claude Code collector. Sources cannot be
+  // added or removed in the UI, so append the new default once while
+  // preserving all existing settings and source edits.
+  if (!config.sources.some((source) => source.harness === "claude-code")) {
+    const claudeSource = defaultConfig().sources.find((source) => source.id === "claude-code-projects");
+    if (claudeSource) {
+      config.sources.push(claudeSource);
+      saveConfig(configPath, config);
+    }
+  }
+
+  return { config, created: false };
 }
 
 export function saveConfig(configPath: string, config: ObserverConfig): void {
