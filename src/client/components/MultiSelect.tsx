@@ -41,16 +41,17 @@ export function MultiSelect({ label, options, selected, onChange, width = 200 }:
   };
 
   return (
-    <div ref={ref} style={{ position: "relative", width }}>
+    <div ref={ref} className="multi-select" style={{ width }}>
       <button
-        className="ghost"
+        className={`multi-select-trigger${selected.length ? " has-value" : ""}`}
         onClick={() => setOpen((o) => !o)}
-        style={{ width: "100%", justifyContent: "flex-start", gap: 8, color: selected.length ? "var(--fg-0)" : "var(--fg-2)" }}
+        aria-expanded={open}
       >
-        <span style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: 0.02, color: "var(--fg-3)" }}>{label}</span>
-        <span style={{ marginLeft: "auto", fontFamily: "var(--font-mono)", fontSize: 12 }}>
+        <span className="multi-select-label">{label}</span>
+        <span className="multi-select-value">
           {selected.length === 0 ? "All" : selected.length === 1 ? options.find((o) => o.id === selected[0])?.label ?? "1" : `${selected.length}`}
         </span>
+        <span className="multi-select-chevron" aria-hidden="true" />
       </button>
       {open && (
         <div className="popover">

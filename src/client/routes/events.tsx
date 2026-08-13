@@ -7,14 +7,14 @@ import {
   type ColumnDef,
 } from "@tanstack/react-table";
 import { api, rangeToFilters } from "../api.js";
-import { DEFAULT_FILTERS, FiltersBar, type FilterState } from "../components/Filters.js";
+import { FiltersBar, useFilterState } from "../components/Filters.js";
 import { COLORS, fmtDate, fmtInt, fmtUsd } from "../components/ui.js";
 import type { NormalizedUsageEvent } from "@shared/contracts";
 
 const PAGE_SIZE = 100;
 
 export function Events() {
-  const [filters, setFilters] = useState<FilterState>(DEFAULT_FILTERS);
+  const [filters, setFilters] = useFilterState();
   const [cursor, setCursor] = useState<string | null>(null);
   const [stack, setStack] = useState<(string | null)[]>([null]);
 

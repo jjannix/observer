@@ -1,13 +1,13 @@
-import { useMemo, useState } from "react";
+import { useMemo } from "react";
 import { useQueries, useQuery } from "@tanstack/react-query";
 import type { NormalizedUsageEvent } from "@shared/contracts";
 import { api, rangeToFilters } from "../api.js";
-import { DEFAULT_FILTERS, FiltersBar, type FilterState } from "../components/Filters.js";
+import { FiltersBar, useFilterState } from "../components/Filters.js";
 import { MultiLineChart } from "../components/Chart.js";
 import { COLORS, CompositionBar, fmtCompact, fmtPct, fmtUsd } from "../components/ui.js";
 
 export function Analysis() {
-  const [filters, setFilters] = useState<FilterState>(DEFAULT_FILTERS);
+  const [filters, setFilters] = useFilterState();
   const range = useMemo(() => {
     const resolved = rangeToFilters(filters.range, "Europe/Berlin");
     return {

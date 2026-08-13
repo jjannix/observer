@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import type { NormalizedUsageEvent } from "@shared/contracts";
 import { api, rangeToFilters } from "../api.js";
-import { DEFAULT_FILTERS, FiltersBar, type FilterState } from "../components/Filters.js";
+import { FiltersBar, useFilterState } from "../components/Filters.js";
 import { COLORS, CompositionBar, fmtCompact, fmtInt, fmtUsd } from "../components/ui.js";
 
 interface SessionRow {
@@ -24,7 +24,7 @@ interface SessionRow {
 }
 
 export function Sessions() {
-  const [filters, setFilters] = useState<FilterState>(DEFAULT_FILTERS);
+  const [filters, setFilters] = useFilterState();
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const range = useMemo(() => {
     const resolved = rangeToFilters(filters.range, "Europe/Berlin");

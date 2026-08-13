@@ -9,6 +9,26 @@ test.describe("Observer UI", () => {
     await expect(page.getByRole("button", { name: /sync now/i }).first()).toBeVisible();
   });
 
+  test("observation filters persist across reloads", async ({ page }) => {
+    await page.route("**/api/v1/dimensions", (route) => route.fulfill({
+      json: { harnesses: ["codex"], providers: [], models: [], projects: [] },
+    }));
+    await page.goto("/");
+    const sevenDays = page.getByRole("button", { name: "7D", exact: true });
+
+    await sevenDays.click();
+    await page.getByLabel("Chart metric").selectOption("costUsd");
+    await page.getByRole("button", { name: /^Filter/ }).click();
+    await page.getByRole("button", { name: /^Harness/ }).click();
+    await page.getByRole("checkbox", { name: "codex" }).check();
+    await expect(sevenDays).toHaveClass(/active/);
+    await page.reload();
+
+    await expect(page.getByRole("button", { name: "7D", exact: true })).toHaveClass(/active/);
+    await expect(page.getByLabel("Chart metric")).toHaveValue("costUsd");
+    await expect(page.getByRole("button", { name: "Clear codex" })).toBeVisible();
+  });
+
   test("sessions route renders the observation table", async ({ page }) => {
     await page.goto("/sessions");
     await expect(page.locator("h1")).toHaveText("Sessions");

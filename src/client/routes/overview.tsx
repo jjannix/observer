@@ -1,8 +1,8 @@
-import { useMemo, useState } from "react";
+import { useMemo } from "react";
 import { useQueries, useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import { api, rangeToFilters } from "../api.js";
-import { CHART_METRICS, DEFAULT_FILTERS, FiltersBar, type FilterState } from "../components/Filters.js";
+import { CHART_METRICS, FiltersBar, useFilterState, type FilterState } from "../components/Filters.js";
 import { StackedAreaChart } from "../components/Chart.js";
 import { CompositionBar, COLORS, fmtCompact, fmtInt, fmtPct, fmtUsd } from "../components/ui.js";
 
@@ -17,7 +17,7 @@ const METRIC_FORMATTER: Record<string, (value: number) => string> = {
 };
 
 export function Overview() {
-  const [filters, setFilters] = useState<FilterState>(DEFAULT_FILTERS);
+  const [filters, setFilters] = useFilterState();
 
   const range = useMemo(() => {
     const { from, to } = rangeToFilters(filters.range, "Europe/Berlin");

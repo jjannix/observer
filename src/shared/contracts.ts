@@ -1,10 +1,4 @@
-/**
- * Public, stable contracts for Observer.
- *
- * These types are the boundary that later harnesses (OpenCode, Claude Code),
- * charting, breakdowns, and the session explorer build on. Changing them is a
- * breaking change.
- */
+/** Shared contracts used across the server and client. */
 
 export const HARNESS_IDS = ["pi", "codex", "opencode", "claude-code"] as const;
 export type HarnessId = (typeof HARNESS_IDS)[number];
@@ -20,16 +14,7 @@ export type ProviderResolution = (typeof PROVIDER_RESOLUTIONS)[number];
 export const NORMALIZATION_STATUSES = ["normalized", "duplicate", "quarantined"] as const;
 export type NormalizationStatus = (typeof NORMALIZATION_STATUSES)[number];
 
-/**
- * A fully normalized, deduplicated model usage event.
- *
- * Token accounting rules (see Canonical Metric Definitions in the spec):
- *  - processedInput = freshInput + cacheRead + cacheWrite
- *  - processedTokens = processedInput + output + unattributed
- *  - output ALWAYS includes reasoning exactly once.
- *  - reasoningOutputTokens is a subset of outputTokens (may be null when unavailable).
- *  - visible output (derived) = outputTokens - reasoningOutputTokens.
- */
+/** A normalized, deduplicated model usage event. */
 export interface NormalizedUsageEvent {
   id: string;
   harness: HarnessId;
