@@ -156,6 +156,24 @@ describe("canonical provider keys", () => {
   });
 });
 
+describe("Claude model ownership", () => {
+  it("recognizes point-release and dated Claude model ids", () => {
+    const dims = resolveDimensions({
+      harness: "claude-code",
+      rawProviderId: null,
+      rawModelId: "claude-opus-4-6-20260801",
+      cwd: null,
+      occurredAt: "2026-08-13T00:00:00Z",
+      providerAliases: SEED_PROVIDER_ALIASES,
+      providerOverrides: [],
+      modelAliases: SEED_MODEL_ALIASES,
+    });
+    expect(dims.canonicalProviderId).toBeNull();
+    expect(dims.owner).toBe("anthropic");
+    expect(dims.canonicalModelId).toBe("anthropic/claude-opus-4-6-20260801");
+  });
+});
+
 describe("project resolution", () => {
   it("resolves cwd upward to git root when present", () => {
     // Resolve on a non-git temp path simply returns the normalized path.

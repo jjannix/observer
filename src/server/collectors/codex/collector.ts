@@ -446,7 +446,7 @@ function usageEmit(
 }
 
 function duplicateTelemetry(lineOrdinal: number): CollectEmit {
-  return quarantine(lineOrdinal, "duplicate-telemetry");
+  return { kind: "duplicate", duplicate: { lineOrdinal, reason: "duplicate-telemetry" } };
 }
 
 function quarantine(lineOrdinal: number, reason: string): CollectEmit {

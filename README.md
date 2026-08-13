@@ -1,8 +1,8 @@
 # Observer
 
-Local-first usage analytics for AI coding harnesses. This milestone delivers **Pi** and **Codex** collectors with complete historical backfill, canonical token accounting, and a diagnostic dark-mode UI — all running on `127.0.0.1` with no network calls, no telemetry, and no authentication.
+Local-first usage analytics for AI coding harnesses. This milestone delivers **Pi**, **Codex**, and **Claude Code** collectors with historical backfill, canonical token accounting, and a diagnostic dark-mode UI — all running on `127.0.0.1` with no network calls, no telemetry, and no authentication.
 
-OpenCode and Claude Code collectors, charts, ranked breakdowns, and the session explorer are explicitly deferred; the schema and collector contract already accommodate them.
+The OpenCode collector remains deferred; the schema and collector contract already accommodate it.
 
 ## Quick start
 
@@ -49,6 +49,7 @@ npm run lint
 - **History cutoff:** `null` (all available history).
 - **Pi source:** `%USERPROFILE%\.pi\agent\sessions`
 - **Codex sources:** `%USERPROFILE%\.codex\sessions` and `%USERPROFILE%\.codex\archived_sessions`
+- **Claude Code source:** `CLAUDE_CONFIG_DIR\projects` or `%USERPROFILE%\.claude\projects` (override with `CLAUDE_CODE_PROJECTS_ROOT`)
 
 Paths are auto-detected, editable, and individually disableable. Changing the history cutoff requires **Save and rebuild**. Rebuild deletes and recreates **only Observer's index**; harness source data is never modified.
 
@@ -86,6 +87,19 @@ Current Codex rollouts expose each request in `event_msg.payload.info.last_token
 - If `total_tokens` increases while input/output components do not, the difference is retained as `unattributedTokens` (covers rollback/compaction).
 - Negative components, non-monotonic cumulative counters, or impossible cache relationships quarantine the event and raise a source-health warning.
 - Forked and subagent rollouts ignore their initial rapid replay of parent telemetry; accounting begins after the first one-second gap.
+
+### Claude Code normalization
+
+Observer recursively scans Claude Code's local session and subagent transcripts. Assistant records expose the same four token classes as Claude Code's official telemetry: `input_tokens`, `cache_read_input_tokens`, `cache_creation_input_tokens`, and `output_tokens`.
+
+- `input_tokens` is uncached/fresh input; processed input adds cache reads and cache creation exactly once.
+- If the aggregate cache-creation field is absent, Observer sums the typed 5-minute and 1-hour cache-creation fields. It never adds the aggregate and breakdown together.
+- Claude Code can persist one assistant record per content block. Observer deduplicates these records by `message.id + requestId` (or `message.id` when the provider omits a request id).
+- Synthetic all-zero assistant messages are ignored. Negative or malformed token vectors are quarantined.
+- Subagent transcripts under `<session>/subagents/` are collected with collision-safe logical session IDs.
+- The transcript records the model but not the delivery route, so provider stays unknown unless a provider override is configured. Reasoning-token and per-request cost fields are also unavailable.
+
+Claude Code documents the transcript format as internal and subject to change; the collector is therefore versioned so an adapter update triggers a source-only reindex. Transcripts are retained for 30 days by default. Some Claude Code versions/providers persist an early streaming `output_tokens` value rather than the final total, so historical output from transcripts can be understated. Claude Code's opt-in OpenTelemetry export is the supported choice for authoritative live organizational monitoring; Observer uses transcripts to preserve zero-setup, local-only backfill.
 
 ## Project & identity resolution
 
@@ -153,7 +167,7 @@ src/
   client/            React + Vite + TanStack Query/Table (overview, events, settings)
   server/
     api/             Fastify routes + analytics queries
-    collectors/      contract, Pi, Codex, JSONL streaming, envelope hashing
+    collectors/      contract, Pi, Codex, Claude Code, JSONL streaming, envelope hashing
     config/          versioned config, paths, Zod schema
     db/              better-sqlite3 + drizzle schema + migration runner
     normalization/   canonical keys, resolution, metric formulas
@@ -165,7 +179,7 @@ tests/               fixtures, unit, integration, e2e
 
 ## Performance targets (current corpus)
 
-- Stream the ~500 MB Pi/Codex corpus with peak memory below 500 MB.
+- Stream the ~500 MB multi-harness corpus with peak memory below 500 MB.
 - First backfill within ~90s.
 - No-change incremental sync within 2s.
 - Summary and event-page queries within 250 ms.

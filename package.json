@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Local-first usage analytics for AI coding harnesses (Pi, Codex).",
+  "description": "Local-first usage analytics for AI coding harnesses (Pi, Codex, Claude Code).",
   "license": "MIT",
   "engines": {
     "node": ">=20.10"

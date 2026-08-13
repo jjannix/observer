@@ -280,6 +280,24 @@ export class SyncEngine {
       return { imported: 0, duplicates: 0, quarantined: inserted ? 1 : 0 };
     }
 
+    if (emit.kind === "duplicate") {
+      const hash = `duplicate:${emit.duplicate.reason}:${file.logicalSessionId}:${emit.duplicate.lineOrdinal}`;
+      const { inserted } = this.repo.insertRawRecord({
+        sourceId: source.id,
+        sourceFileId,
+        logicalSessionId: file.logicalSessionId,
+        lineOrdinal: emit.duplicate.lineOrdinal,
+        envelopeHash: hash,
+        parserVersion: collector.adapterVersion,
+        occurredAt: new Date().toISOString(),
+        status: "duplicate",
+        envelopeJson: JSON.stringify({ reason: emit.duplicate.reason }),
+        qualityFlagsJson: JSON.stringify(["duplicate-telemetry"]),
+        createdAt: new Date().toISOString(),
+      });
+      return { imported: 0, duplicates: inserted ? 1 : 0, quarantined: 0 };
+    }
+
     const envelope = emit.usage.envelope;
     const cutoff = config.historyCutoff;
     const withinCutoff = cutoff == null || envelope.occurredAt >= cutoff;

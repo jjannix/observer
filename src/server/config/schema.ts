@@ -110,6 +110,7 @@ export function defaultConfig(): ObserverConfig {
       { id: "pi-default", harness: "pi", label: "Pi", root: roots.pi, enabled: true },
       { id: "codex-sessions", harness: "codex", label: "Codex (sessions)", root: roots.codexSessions, enabled: true },
       { id: "codex-archived", harness: "codex", label: "Codex (archived)", root: roots.codexArchived, enabled: true },
+      { id: "claude-code-projects", harness: "claude-code", label: "Claude Code", root: roots.claudeCodeProjects, enabled: true },
     ],
     providerAliases: SEED_PROVIDER_ALIASES,
     providerOverrides: [],

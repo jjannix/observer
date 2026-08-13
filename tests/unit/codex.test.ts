@@ -136,7 +136,7 @@ describe("Codex collector", () => {
 
     const result = await run(path);
     expect(usageEmits(result.emits)).toHaveLength(1);
-    expect(result.emits.filter((emit) => emit.kind === "quarantine")).toHaveLength(1);
+    expect(result.emits.filter((emit) => emit.kind === "duplicate")).toHaveLength(1);
   });
 
   it("suppresses copied telemetry at the start of forked and subagent rollouts", async () => {
@@ -208,8 +208,8 @@ describe("Codex collector", () => {
     const result = await run(path);
     const envs = usageEmits(result.emits);
     expect(envs.length).toBe(1); // one delta (550->660), the equal one is duplicate
-    const quarantines = result.emits.filter((e) => e.kind === "quarantine");
-    expect(quarantines.length).toBe(1);
+    const duplicates = result.emits.filter((e) => e.kind === "duplicate");
+    expect(duplicates.length).toBe(1);
   });
 
   it("retains total-only increases as unattributed tokens", async () => {

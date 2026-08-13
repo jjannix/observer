@@ -11,6 +11,7 @@ import { containsForbiddenContent } from "../../src/server/collectors/envelope.j
 let piRoot: string;
 let codexRoot: string;
 let codexArchivedRoot: string;
+let claudeCodeRoot: string;
 
 function newConfig(): ObserverConfig {
   const cfg = defaultConfig();
@@ -18,6 +19,7 @@ function newConfig(): ObserverConfig {
     { id: "pi-default", harness: "pi", label: "Pi", root: piRoot, enabled: true },
     { id: "codex-sessions", harness: "codex", label: "Codex", root: codexRoot, enabled: true },
     { id: "codex-archived", harness: "codex", label: "Codex (archived)", root: codexArchivedRoot, enabled: true },
+    { id: "claude-code-projects", harness: "claude-code", label: "Claude Code", root: claudeCodeRoot, enabled: true },
   ];
   cfg.projectAliases = [];
   return cfg;
@@ -88,6 +90,53 @@ function writeModernCodexSession(dir: string, name: string) {
   writeFileSync(join(dir, `${name}.jsonl`), lines.map((line) => JSON.stringify(line)).join("\n") + "\n", "utf8");
 }
 
+function writeClaudeCodeSession(dir: string, name: string) {
+  const lines = [
+    { type: "user", uuid: "claude-user-1", parentUuid: null, sessionId: name, cwd: "C:/claude-project" },
+    {
+      type: "assistant",
+      uuid: "claude-assistant-1",
+      parentUuid: "claude-user-1",
+      sessionId: name,
+      cwd: "C:/claude-project",
+      timestamp: "2026-08-13T11:00:00.000Z",
+      requestId: "req-claude-1",
+      message: {
+        id: "msg-claude-1",
+        role: "assistant",
+        model: "claude-opus-4-6",
+        usage: {
+          input_tokens: 10,
+          cache_read_input_tokens: 40,
+          cache_creation_input_tokens: 20,
+          output_tokens: 30,
+        },
+      },
+    },
+    {
+      type: "assistant",
+      uuid: "claude-assistant-2",
+      parentUuid: "claude-assistant-1",
+      sessionId: name,
+      cwd: "C:/claude-project",
+      timestamp: "2026-08-13T11:00:00.001Z",
+      requestId: "req-claude-1",
+      message: {
+        id: "msg-claude-1",
+        role: "assistant",
+        model: "claude-opus-4-6",
+        usage: {
+          input_tokens: 10,
+          cache_read_input_tokens: 40,
+          cache_creation_input_tokens: 20,
+          output_tokens: 30,
+        },
+      },
+    },
+  ];
+  writeFileSync(join(dir, `${name}.jsonl`), lines.map((line) => JSON.stringify(line)).join("\n") + "\n", "utf8");
+}
+
 describe("sync lifecycle", () => {
   let db: ReturnType<typeof makeDb>;
   let repo: Repository;
@@ -98,6 +147,7 @@ describe("sync lifecycle", () => {
     piRoot = mkdtempSync(join(tmpdir(), "obs-pi-"));
     codexRoot = mkdtempSync(join(tmpdir(), "obs-codex-"));
     codexArchivedRoot = mkdtempSync(join(tmpdir(), "obs-codex-a-"));
+    claudeCodeRoot = mkdtempSync(join(tmpdir(), "obs-claude-code-"));
     db = makeDb();
     repo = new Repository(db.raw);
     config = newConfig();
@@ -109,6 +159,7 @@ describe("sync lifecycle", () => {
     rmSync(piRoot, { recursive: true, force: true });
     rmSync(codexRoot, { recursive: true, force: true });
     rmSync(codexArchivedRoot, { recursive: true, force: true });
+    rmSync(claudeCodeRoot, { recursive: true, force: true });
   });
 
   it("two full syncs produce identical totals", async () => {
@@ -202,6 +253,36 @@ describe("sync lifecycle", () => {
       reasoning_output_tokens: 4,
       raw_model_id: "gpt-5.3-codex",
     });
+  });
+
+  it("imports Claude Code transcript usage", async () => {
+    writeClaudeCodeSession(claudeCodeRoot, "claude-session");
+
+    engine.trigger("manual");
+    await engine.join();
+
+    expect(countEvents(repo, "claude-code")).toBe(1);
+    const event = repo["db"]
+      .prepare(
+        `SELECT occurred_at, fresh_input_tokens, cache_read_input_tokens,
+                cache_write_input_tokens, output_tokens, raw_provider_id, raw_model_id
+         FROM usage_events WHERE harness = 'claude-code'`,
+      )
+      .get() as any;
+    expect(event).toMatchObject({
+      occurred_at: "2026-08-13T11:00:00.000Z",
+      fresh_input_tokens: 10,
+      cache_read_input_tokens: 40,
+      cache_write_input_tokens: 20,
+      output_tokens: 30,
+      raw_provider_id: null,
+      raw_model_id: "claude-opus-4-6",
+    });
+    const duplicate = repo["db"]
+      .prepare(`SELECT COUNT(*) AS c FROM raw_usage_records WHERE normalization_status = 'duplicate'`)
+      .get() as any;
+    expect(duplicate.c).toBe(1);
+    expect(repo.countWarnings()).toBe(0);
   });
 
   it("reindexes Codex files when the adapter version changes", async () => {
