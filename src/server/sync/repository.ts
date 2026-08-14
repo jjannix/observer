@@ -459,8 +459,19 @@ export class Repository {
     this.db.prepare(`DELETE FROM source_message_nodes WHERE source_id = ?`).run(sourceId);
   }
 
+  /**
+   * Clear every canonical row for renormalize. Dimension tables (sessions,
+   * projects, providers, models) are rebuilt by the replay, so they must be
+   * cleared too — otherwise renamed canonical keys leave zombie filter rows.
+   * Children are deleted before parents to respect foreign keys.
+   */
   clearAllNormalized() {
     this.db.exec(`DELETE FROM usage_events`);
+    this.db.exec(`DELETE FROM turns`);
+    this.db.exec(`DELETE FROM sessions`);
+    this.db.exec(`DELETE FROM projects`);
+    this.db.exec(`DELETE FROM models`);
+    this.db.exec(`DELETE FROM providers`);
   }
 
   clearAllIndex() {

@@ -685,6 +685,12 @@ describe("sync lifecycle", () => {
       .prepare(`SELECT DISTINCT canonical_model_id FROM usage_events WHERE harness='pi'`)
       .all() as any[];
     expect(m.some((x) => x.canonical_model_id.includes("gpt-5-renamed"))).toBe(true);
+    // Renormalize rebuilds the dimension tables: the pre-rename canonical row
+    // must not linger as a zombie filter entry with zero events.
+    const stale = repo["db"]
+      .prepare(`SELECT COUNT(*) AS c FROM models WHERE id LIKE '%gpt-5' AND id NOT LIKE '%renamed%'`)
+      .get() as any;
+    expect(stale.c).toBe(0);
   });
 
   it("rebuild affects only Observer storage (sources untouched)", async () => {
