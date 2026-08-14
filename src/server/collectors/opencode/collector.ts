@@ -13,7 +13,7 @@ import type {
   DiscoveredFile,
 } from "../contract.js";
 
-export const OPENCODE_ADAPTER_VERSION = "opencode-2";
+export const OPENCODE_ADAPTER_VERSION = "opencode-3";
 
 interface MessageRow {
   rowid: number;
@@ -24,11 +24,6 @@ interface MessageRow {
   data: string;
   session_directory: string | null;
   session_parent_id: string | null;
-}
-
-interface MessageNode {
-  parentId: string | null;
-  role: string | null;
 }
 
 /** In-flight rowid sweep across the pending set (null once fully drained). */
@@ -47,15 +42,28 @@ interface Generation {
   maxUpdated: number;
 }
 
+/**
+ * Upper bound on retained accounting-snapshot digests. The cache only
+ * exists to skip re-delivered rows whose accounting did not change; an
+ * evicted entry is at worst re-emitted once and collapsed by the engine's
+ * envelope-hash dedupe (and supersession), so the bound trades a rare
+ * duplicate row for constant parser-state size. Steady-state re-deliveries
+ * are recent rows, which always sit inside the window.
+ */
+const SNAPSHOT_CACHE_CAP = 1024;
+
 interface OpenCodeParserState {
   /** Largest message.time_updated consumed so far (epoch ms watermark). */
   watermark: number;
   /** Row ids consumed exactly at the watermark (excluded on the next pass). */
   boundaryIds: string[];
-  nodes: Record<string, MessageNode>;
-  /** message id -> serialized accounting snapshot (change + supersession detection). */
+  /** Bounded FIFO of message id -> accounting-snapshot digest. */
   snapshots: Record<string, string>;
+  /** Insertion order of `snapshots` keys for FIFO eviction. */
+  snapshotOrder: string[];
+  /** In-flight rowid sweep across the pending set (null once fully drained). */
   sweep: SweepState | null;
+  /** Database generation observed at the start of the last sweep. */
   generation: Generation | null;
 }
 
@@ -66,7 +74,7 @@ interface ParsedToken {
 }
 
 function emptyState(): OpenCodeParserState {
-  return { watermark: 0, boundaryIds: [], nodes: {}, snapshots: {}, sweep: null, generation: null };
+  return { watermark: 0, boundaryIds: [], snapshots: {}, snapshotOrder: [], sweep: null, generation: null };
 }
 
 /**
@@ -106,6 +114,14 @@ function emptyState(): OpenCodeParserState {
  *   advances past what was actually drained, and the engine re-reads from
  *   the start when the file shrinks below the cursor (SQLite vacuum), so a
  *   shrinking database cannot deadlock collection.
+ * - Parser state is strictly bounded: the watermark, its tie-exclusion ids,
+ *   the in-flight sweep cursor, and a FIFO-capped cache of recent
+ *   accounting-snapshot digests. The message graph is never retained —
+ *   turn attribution walks the parentID chain directly in the source
+ *   database (`message.id` is the text primary key, so each step is a point
+ *   lookup that terminates at the nearest user message). Serialized state
+ *   therefore stays constant-sized no matter how large the database is,
+ *   keeping backfills linear instead of quadratic.
  * - At the start of each sweep a cheap generation probe (row count + max
  *   `time_updated`) validates the database identity. A replaced or restored
  *   database (backup restore, migration, recreation) rolls count or max
@@ -180,6 +196,9 @@ export class OpenCodeCollector implements Collector {
 
       const rows = fetchPendingRows(db, state, limit);
       const emits: CollectEmit[] = [];
+      // Node emits are deduped within a batch; the engine's node upsert is
+      // idempotent, so re-emitting a node across batches is harmless.
+      const emittedNodes = new Set<string>();
 
       for (const row of rows) {
         const trimmed = row.data.trim();
@@ -194,8 +213,8 @@ export class OpenCodeCollector implements Collector {
         const messageId = row.id;
         const parentId = stringValue(record.parentID);
         const role = stringValue(record.role);
-        if (!state.nodes[messageId]) {
-          state.nodes[messageId] = { parentId, role };
+        if (!emittedNodes.has(messageId)) {
+          emittedNodes.add(messageId);
           emits.push({ kind: "node", node: { nodeId: messageId, parentId, role, turnId: null } });
         }
 
@@ -213,15 +232,14 @@ export class OpenCodeCollector implements Collector {
         // not represent an API request.
         if (processedTokens(parsed.usage) === 0) continue;
 
-        const snapshot = accountingSnapshot(row, record, parsed.usage);
-        if (state.snapshots[messageId] === snapshot) continue;
-        state.snapshots[messageId] = snapshot;
+        const digest = snapshotDigest(accountingSnapshot(row, record, parsed.usage));
+        if (state.snapshots[messageId] === digest) continue;
+        rememberSnapshot(state, messageId, digest);
 
         // Windows arrive in rowid order, which does not preserve graph
-        // order — a parent can be updated after its child — so missing
-        // ancestors are resolved from the database on demand.
-        registerAncestors(parentId, state, db, emits);
-        const turnId = nearestUserAncestor(messageId, state.nodes);
+        // order — a parent can be updated after its child — so the nearest
+        // user ancestor is resolved from the database on demand.
+        const turnId = resolveTurn(parentId, db, emits, emittedNodes);
 
         const envelope = buildEnvelope(row, record, parsed.usage, turnId, file.mtimeMs);
         envelope.envelopeHash = hashEnvelope(envelope);
@@ -447,61 +465,78 @@ function processedTokens(usage: TokenUsageRecord): number {
     usage.outputTokens + usage.unattributedTokens;
 }
 
-/** Walk the parentID chain to the nearest node whose role is `user`. */
-function nearestUserAncestor(
-  startId: string,
-  nodes: Record<string, MessageNode>,
+/**
+ * Resolve the nearest user ancestor of `parentId` by walking the parentID
+ * chain directly in the source database. `message.id` is the text primary
+ * key, so every step is an indexed point lookup, and the walk stops at the
+ * nearest user message, so chains stay short. Ancestors fetched along the
+ * way are emitted (deduped per batch) so the message-node table stays
+ * complete without retaining the graph in parser state. Returns null when
+ * the chain is missing, cyclic, or has no user ancestor within the depth
+ * limit.
+ */
+function resolveTurn(
+  parentId: string | null,
+  db: Database.Database,
+  emits: CollectEmit[],
+  emittedNodes: Set<string>,
 ): string | null {
-  let current: string | null = startId;
+  if (parentId == null) return null;
+  const select = db.prepare("SELECT data FROM message WHERE id = ?");
   const seen = new Set<string>();
+  let current: string | null = parentId;
   for (let i = 0; i < 4096; i++) {
-    if (!current || seen.has(current)) return null;
+    if (current == null || seen.has(current)) return null;
     seen.add(current);
-    const node: MessageNode | undefined = nodes[current];
-    if (!node) return null;
-    if ((node.role ?? "").toLowerCase() === "user") return current;
-    current = node.parentId;
+    const found = select.get(current) as { data: string } | undefined;
+    if (!found) return null;
+    let record: Record<string, unknown>;
+    try {
+      record = JSON.parse(found.data) as Record<string, unknown>;
+    } catch {
+      return null;
+    }
+    const parent = stringValue(record.parentID);
+    const role = stringValue(record.role);
+    if (!emittedNodes.has(current)) {
+      emittedNodes.add(current);
+      emits.push({ kind: "node", node: { nodeId: current, parentId: parent, role, turnId: null } });
+    }
+    if ((role ?? "").toLowerCase() === "user") return current;
+    current = parent;
   }
   return null;
 }
 
 /**
- * Register ancestors of `fromId` on demand, continuing through already-known
- * nodes. Fetched nodes are emitted like streamed ones so the message-node
- * table stays complete; later consumption of the same row is skipped.
+ * Record an accounting-snapshot digest in the bounded FIFO cache, evicting
+ * the oldest entries beyond `SNAPSHOT_CACHE_CAP`.
  */
-function registerAncestors(
-  fromId: string | null,
-  state: OpenCodeParserState,
-  db: Database.Database,
-  emits: CollectEmit[],
-): void {
-  if (fromId == null) return;
-  const select = db.prepare("SELECT id, data FROM message WHERE id = ?");
-  const seen = new Set<string>();
-  let current: string | null = fromId;
-  for (let i = 0; i < 4096; i++) {
-    if (current == null || seen.has(current)) return;
-    seen.add(current);
-    const known: MessageNode | undefined = state.nodes[current];
-    if (known) {
-      current = known.parentId;
-      continue;
-    }
-    const found = select.get(current) as { id: string; data: string } | undefined;
-    if (!found) return;
-    let record: Record<string, unknown>;
-    try {
-      record = JSON.parse(found.data) as Record<string, unknown>;
-    } catch {
-      return;
-    }
-    const parentId = stringValue(record.parentID);
-    const role = stringValue(record.role);
-    state.nodes[current] = { parentId, role };
-    emits.push({ kind: "node", node: { nodeId: current, parentId, role, turnId: null } });
-    current = parentId;
+function rememberSnapshot(state: OpenCodeParserState, messageId: string, digest: string): void {
+  if (!(messageId in state.snapshots)) state.snapshotOrder.push(messageId);
+  state.snapshots[messageId] = digest;
+  while (state.snapshotOrder.length > SNAPSHOT_CACHE_CAP) {
+    const oldest = state.snapshotOrder.shift();
+    if (oldest === undefined) break;
+    delete state.snapshots[oldest];
   }
+}
+
+/**
+ * Compact fixed-size digest of an accounting snapshot (two independent
+ * 32-bit hashes rendered as 16 hex chars). Equality-preserving and cheap to
+ * retain en masse; collision odds across a cap-bounded cache are negligible,
+ * and a collision would only defer one superseding emit to the next change.
+ */
+function snapshotDigest(text: string): string {
+  let djb2 = 5381;
+  let sdbm = 0;
+  for (let i = 0; i < text.length; i++) {
+    const c = text.charCodeAt(i);
+    djb2 = ((djb2 << 5) + djb2 + c) >>> 0;
+    sdbm = (c + (sdbm << 6) + (sdbm << 16) - sdbm) >>> 0;
+  }
+  return djb2.toString(16).padStart(8, "0") + sdbm.toString(16).padStart(8, "0");
 }
 
 /** Best-effort schema fingerprint: structural signature of a message row. */
@@ -569,6 +604,33 @@ function stringValue(value: unknown): string | null {
 function safeParseState(raw: string): OpenCodeParserState {
   try {
     const parsed = JSON.parse(raw) as Partial<OpenCodeParserState>;
+    const snapshots = stringRecord(parsed.snapshots);
+    // Insertion order for FIFO eviction: fall back to key order when a
+    // legacy state (pre opencode-3) carried no explicit order.
+    const rawOrder = Array.isArray(parsed.snapshotOrder)
+      ? parsed.snapshotOrder.filter((id): id is string => typeof id === "string")
+      : Object.keys(snapshots);
+    const snapshotOrder: string[] = [];
+    const seen = new Set<string>();
+    for (const id of rawOrder) {
+      if (id in snapshots && !seen.has(id)) {
+        seen.add(id);
+        snapshotOrder.push(id);
+      }
+    }
+    for (const key of Object.keys(snapshots)) {
+      if (!seen.has(key)) {
+        seen.add(key);
+        snapshotOrder.push(key);
+      }
+    }
+    // A legacy state may exceed the cap (full snapshot strings); trim it on
+    // load so the very next serialization is already bounded.
+    while (snapshotOrder.length > SNAPSHOT_CACHE_CAP) {
+      const oldest = snapshotOrder.shift();
+      if (oldest === undefined) break;
+      delete snapshots[oldest];
+    }
     return {
       watermark: typeof parsed.watermark === "number" && Number.isFinite(parsed.watermark)
         ? parsed.watermark
@@ -576,8 +638,8 @@ function safeParseState(raw: string): OpenCodeParserState {
       boundaryIds: Array.isArray(parsed.boundaryIds)
         ? parsed.boundaryIds.filter((id): id is string => typeof id === "string")
         : [],
-      nodes: asRecord(parsed.nodes) as Record<string, MessageNode> ?? {},
-      snapshots: stringRecord(parsed.snapshots),
+      snapshots,
+      snapshotOrder,
       sweep: parseSweep(parsed.sweep),
       generation: parseGeneration(parsed.generation),
     };

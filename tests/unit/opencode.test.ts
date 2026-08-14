@@ -600,6 +600,127 @@ describe("OpenCode collector", () => {
     expect(byteCursors).toEqual([0, 0, statSync(path).size]);
   });
 
+  it("keeps parser state bounded across a large multi-batch backfill", async () => {
+    // 6000 messages => 12 batches of 500, well past the snapshot-cache cap.
+    const messages: WriteMessage[] = [];
+    for (let i = 0; i < 6000; i++) {
+      messages.push({
+        id: `msg_bulk_${i}`,
+        timeCreated: 1786380000000 + i,
+        timeUpdated: 1786380000000 + i,
+        data: assistantMessage({
+          parentID: null,
+          tokens: { input: 1, output: 1, reasoning: 0, cache: { read: 0, write: 0 } },
+        }),
+      });
+    }
+    const path = writeDatabase(messages);
+
+    let options: Partial<CollectFileOptions> = { maxLines: 500 };
+    let total = 0;
+    let batches = 0;
+    const stateSizes: number[] = [];
+    for (;;) {
+      const result = await collect(path, options);
+      total += usageEmits(result.emits).length;
+      stateSizes.push(result.parserState?.length ?? 0);
+      batches++;
+      if (result.byteCursor > 0) break;
+      options = {
+        byteCursor: result.byteCursor,
+        lineCursor: result.lineCursor,
+        parserState: result.parserState,
+        maxLines: 500,
+      };
+    }
+    expect(batches).toBe(13); // 12 full windows + 1 empty draining window
+    expect(total).toBe(6000);
+
+    // Every serialized state stays small: constant-sized bookkeeping plus a
+    // capped snapshot-digest cache (the retained message graph of the old
+    // design would already measure in megabytes here).
+    expect(Math.max(...stateSizes)).toBeLessThan(96 * 1024);
+    // Growth stops once the cache reaches its cap: late batches serialize
+    // essentially the same state as mid-backfill ones instead of growing
+    // with the number of consumed messages (non-quadratic backfill).
+    const last = stateSizes.length - 1;
+    expect(stateSizes[last]).toBeLessThan(stateSizes[0] * 2 + 4096);
+    expect(Math.abs(stateSizes[last] - stateSizes[3])).toBeLessThan(4096);
+  });
+
+  it("re-imports evicted rows whose accounting changes after a large backfill", async () => {
+    // Backfill more rows than the snapshot cache retains, so the earliest
+    // message's digest has been evicted.
+    const messages: WriteMessage[] = [];
+    for (let i = 0; i < 1100; i++) {
+      messages.push({
+        id: `msg_bulk_${i}`,
+        timeCreated: 1786380000000 + i,
+        timeUpdated: 1786380000000 + i,
+        data: assistantMessage({
+          parentID: null,
+          tokens: { input: 1, output: 1, reasoning: 0, cache: { read: 0, write: 0 } },
+        }),
+      });
+    }
+    const path = writeDatabase(messages);
+
+    let options: Partial<CollectFileOptions> = { maxLines: 500 };
+    let drained: Awaited<ReturnType<typeof collect>> | null = null;
+    for (;;) {
+      const result = await collect(path, options);
+      if (result.byteCursor > 0) {
+        drained = result;
+        break;
+      }
+      options = {
+        byteCursor: result.byteCursor,
+        lineCursor: result.lineCursor,
+        parserState: result.parserState,
+        maxLines: 500,
+      };
+    }
+    expect(drained).not.toBeNull();
+
+    // The evicted early row changes its accounting: it must re-emit (no
+    // data loss from cache eviction).
+    updateMessage(
+      "msg_bulk_0",
+      assistantMessage({
+        parentID: null,
+        tokens: { input: 5, output: 5, reasoning: 0, cache: { read: 0, write: 0 } },
+      }),
+      1786390000000,
+    );
+
+    const after = await collect(path, {
+      lineCursor: drained!.lineCursor,
+      parserState: drained!.parserState,
+    });
+    const envelopes = usageEmits(after.emits);
+    expect(envelopes).toHaveLength(1);
+    expect(envelopes[0].requestId).toBe("msg_bulk_0");
+    expect(envelopes[0].usage.freshInputTokens).toBe(5);
+  });
+
+  it("attributes turns to a parent consumed in an earlier batch", async () => {
+    const messages: WriteMessage[] = [
+      { id: "msg_user_1", timeCreated: 1786388366000, data: userMessage() },
+      { id: "msg_asst_1", timeCreated: 1786388366292, timeUpdated: 1786388370771, data: assistantMessage() },
+    ];
+    const path = writeDatabase(messages);
+
+    const first = await collect(path, { maxLines: 1 }); // consumes msg_user_1
+    const second = await collect(path, {
+      lineCursor: first.lineCursor,
+      parserState: first.parserState,
+      maxLines: 1,
+    });
+    const envelopes = usageEmits(second.emits);
+    expect(envelopes).toHaveLength(1);
+    expect(envelopes[0].turnId).toBe("msg_user_1");
+  });
+
   it("re-imports a restored database whose timestamps rolled back", async () => {
     const path = writeDatabase(defaultMessages());
     const first = await collect(path);

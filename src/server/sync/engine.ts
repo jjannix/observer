@@ -110,6 +110,10 @@ export class SyncEngine {
         totalImported += counts.imported;
         totalDuplicates += counts.duplicates;
         totalQuarantined += counts.quarantined;
+        // File-level errors were already streamed into the running sync run;
+        // carry them into the final error list so they stay visible after
+        // `finishSyncRun` overwrites `errors_json`.
+        errors.push(...counts.errors);
       } catch (err) {
         const msg = `source ${source.id}: ${(err as Error).message}`;
         errors.push(msg);
@@ -135,7 +139,7 @@ export class SyncEngine {
     source: SourceConfig,
     config: ObserverConfig,
     runId: string,
-  ): Promise<{ imported: number; duplicates: number; quarantined: number }> {
+  ): Promise<{ imported: number; duplicates: number; quarantined: number; errors: string[] }> {
     const collector = getCollector(source.harness);
     if (!collector) throw new Error(`no collector for harness ${source.harness}`);
 
@@ -148,19 +152,12 @@ export class SyncEngine {
     this.repo.upsertCollectorSource(source, collector.adapterVersion, present);
     if (!present) {
       this.repo.markMissingSourceFiles(source.id, []);
-      return { imported: 0, duplicates: 0, quarantined: 0 };
+      return { imported: 0, duplicates: 0, quarantined: 0, errors: [] };
     }
 
     const ctx = { sourceId: source.id, historyCutoff: config.historyCutoff };
     const discovered = collector.discover(source.root, ctx);
     const now = new Date().toISOString();
-
-    // Capture the stored signature of every discovered file BEFORE the
-    // upserts overwrite it: the skip below must compare against the last
-    // completed sync, not against values written moments ago.
-    const previousByLogicalId = new Map(
-      discovered.map((f) => [f.logicalSessionId, this.repo.getSourceFile(source.id, f.logicalSessionId)]),
-    );
 
     for (const f of discovered) {
       this.repo.upsertSourceFile({
@@ -181,12 +178,17 @@ export class SyncEngine {
     let imported = 0;
     let duplicates = 0;
     let quarantined = 0;
+    const errors: string[] = [];
 
     for (const f of discovered) {
-      const previous = previousByLogicalId.get(f.logicalSessionId);
+      // The stored size/mtime signature only advances inside a committed
+      // collection batch, so this row describes the last successfully
+      // completed collection — exactly what the skip decision must compare
+      // against the live file. A previously failed attempt therefore leaves
+      // a stale signature here and forces a retry.
       const fileRow = this.repo.getSourceFile(source.id, f.logicalSessionId);
       if (!fileRow) continue;
-      if (shouldSkipSourceFile(previous, f)) continue;
+      if (shouldSkipSourceFile(fileRow, f)) continue;
 
       let byteCursor = fileRow.byteCursor;
       let lineCursor = fileRow.lineCursor;
@@ -213,7 +215,8 @@ export class SyncEngine {
         } catch (err) {
           const msg = `file ${f.logicalSessionId}: ${(err as Error).message}`;
           this.repo.setSourceError(source.id, msg);
-          this.repo.appendSyncRunError(runId, `source ${source.id} ${msg}`);
+          this.repo.appendSyncRunError(runId, `source ${source.id}: ${msg}`);
+          errors.push(`source ${source.id}: ${msg}`);
           break;
         }
 
@@ -226,17 +229,22 @@ export class SyncEngine {
             duplicates += outcome.duplicates;
             quarantined += outcome.quarantined;
           }
+          // Cursor and signature advance atomically with the emits: a failed
+          // batch leaves both behind so the file is retried, not skipped.
           this.repo.setSourceFileCursor(
             fileRow.id,
             result.byteCursor,
             result.lineCursor,
             result.parserState,
             new Date().toISOString(),
+            f.size,
+            f.mtimeMs,
           );
         });
         if (!tx.ok) {
           this.repo.setSourceError(source.id, `file ${f.logicalSessionId}: ${tx.error}`);
-          this.repo.appendSyncRunError(runId, `source ${source.id} file ${f.logicalSessionId}: ${tx.error}`);
+          this.repo.appendSyncRunError(runId, `source ${source.id}: file ${f.logicalSessionId}: ${tx.error}`);
+          errors.push(`source ${source.id}: file ${f.logicalSessionId}: ${tx.error}`);
           break;
         }
 
@@ -247,7 +255,7 @@ export class SyncEngine {
       }
     }
 
-    return { imported, duplicates, quarantined };
+    return { imported, duplicates, quarantined, errors };
   }
 
   private applyEmit(
@@ -408,12 +416,14 @@ export class SyncEngine {
 }
 
 /**
- * Decide whether a discovered file can be skipped entirely this sync. Only a
- * file whose signature (path, size, mtime) is identical to the last
- * completed sync AND whose cursor reached the file size may be skipped:
- * any signature change — including a shrink below the consumed cursor
- * (SQLite vacuum, file rewrite) — forces at least one collection pass,
- * where parser watermarks and envelope-hash dedupe keep the re-read
+ * Decide whether a discovered file can be skipped entirely this sync. The
+ * stored row reflects the last successfully completed collection: its
+ * signature (path, size, mtime) only advances together with the cursor
+ * inside a committed batch. Skipping therefore requires an identical
+ * signature AND a cursor that reached the file size — any signature change
+ * (including a shrink below the consumed cursor, e.g. a SQLite vacuum or a
+ * rewrite that failed to collect last time) forces at least one collection
+ * pass, where parser watermarks and envelope-hash dedupe keep the re-read
  * idempotent.
  */
 export function shouldSkipSourceFile(

@@ -1,8 +1,11 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, rmSync, writeFileSync, renameSync, unlinkSync, appendFileSync } from "node:fs";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { mkdtempSync, rmSync, writeFileSync, renameSync, unlinkSync, appendFileSync, utimesSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
+import * as collectorsModule from "../../src/server/collectors/index.js";
+import type { Collector } from "../../src/server/collectors/contract.js";
+import { OPENCODE_ADAPTER_VERSION } from "../../src/server/collectors/opencode/collector.js";
 import { Repository } from "../../src/server/sync/repository.js";
 import { SyncEngine } from "../../src/server/sync/engine.js";
 import { makeDb } from "../helpers/db.js";
@@ -32,6 +35,13 @@ function newConfig(): ObserverConfig {
 function countEvents(repo: Repository, harness: string): number {
   const r = repo["db"].prepare(`SELECT COUNT(*) AS c FROM usage_events WHERE harness = ?`).get(harness) as any;
   return r.c;
+}
+
+function piFreshInput(repo: Repository): number | null {
+  const r = repo["db"]
+    .prepare(`SELECT fresh_input_tokens FROM usage_events WHERE harness = 'pi'`)
+    .get() as any;
+  return r ? r.fresh_input_tokens : null;
 }
 
 function sumTokens(repo: Repository): number {
@@ -785,6 +795,159 @@ describe("sync lifecycle", () => {
       const env = JSON.parse(row.envelope_json);
       expect(containsForbiddenContent(env)).toBe(false);
     }
+  });
+
+  it("retries a same-size rewrite after a transient collection failure", async () => {
+    const file = join(piRoot, "sess-flaky.jsonl");
+    const writeSession = (input: number) => {
+      const lines = [
+        { type: "header", id: "sess-flaky", cwd: join(piRoot, "proj") },
+        { type: "message", id: "u1", role: "user", parentId: null },
+        {
+          type: "message",
+          id: "a0",
+          role: "assistant",
+          parentId: "u1",
+          message: { provider: "openai", model: "gpt-5" },
+          usage: { input, cacheRead: 10, cacheWrite: 5, output: 20, reasoning: 5, totalTokens: input + 35, cost: { total: 0.001 } },
+        },
+      ];
+      writeFileSync(file, lines.map((l) => JSON.stringify(l)).join("\n") + "\n", "utf8");
+    };
+
+    writeSession(100);
+    const t0 = 1786724102000;
+    utimesSync(file, new Date(t0), new Date(t0));
+    const sizeBefore = statSync(file).size;
+
+    engine.trigger("manual");
+    await engine.join();
+    expect(countEvents(repo, "pi")).toBe(1);
+    expect(piFreshInput(repo)).toBe(100);
+
+    // Same-size in-place rewrite with a strictly newer mtime, both pinned so
+    // the signature comparison cannot be flaky.
+    writeSession(700);
+    const sizeAfterRewrite = statSync(file).size;
+    expect(sizeAfterRewrite).toBe(sizeBefore); // sanity: byte-identical length
+    const t1 = t0 + 60_000;
+    utimesSync(file, new Date(t1), new Date(t1));
+
+    // The next collection attempt fails transiently (e.g. a locked file).
+    // The stored signature must not advance past the failed attempt, or the
+    // stale EOF cursor would make the next sync skip the file forever.
+    const realGetCollector = collectorsModule.getCollector;
+    let failuresLeft = 1;
+    let attempts = 0;
+    const spy = vi.spyOn(collectorsModule, "getCollector").mockImplementation((harness) => {
+      const real = realGetCollector(harness);
+      if (!real || real.harness !== "pi") return real;
+      const wrapped: Collector = {
+        harness: real.harness,
+        adapterVersion: real.adapterVersion,
+        discover: (root, ctx) => real.discover(root, ctx),
+        collectFile: async (f, opts) => {
+          attempts += 1;
+          if (failuresLeft > 0) {
+            failuresLeft -= 1;
+            throw new Error("transient read failure");
+          }
+          return real.collectFile(f, opts);
+        },
+      };
+      return wrapped;
+    });
+
+    engine.trigger("manual");
+    await engine.join();
+
+    expect(attempts).toBe(1);
+    expect(countEvents(repo, "pi")).toBe(1);
+    expect(piFreshInput(repo)).toBe(100); // the failed attempt imported nothing
+    expect(repo.getSource("pi-default")?.last_error).toContain("transient read failure");
+    // The failure stays visible in the run history as valid, parseable JSON.
+    const failedRun = repo.getSyncRun(repo.listSyncRuns(1)[0].id)!;
+    expect(JSON.parse(failedRun.errors_json)).toEqual([
+      expect.stringContaining("transient read failure"),
+    ]);
+    // The stored signature still describes the last completed collection.
+    const stored = repo["db"]
+      .prepare(`SELECT size, mtime_ms, byte_cursor FROM source_files WHERE source_id = 'pi-default' AND logical_session_id = 'sess-flaky'`)
+      .get() as any;
+    expect(stored.mtime_ms).toBe(t0);
+    expect(stored.byte_cursor).toBe(sizeAfterRewrite);
+
+    // No filesystem change whatsoever: the next sync must retry the file and
+    // pick up the rewrite (superseding the old snapshot, not duplicating).
+    // The spy stays installed (failures exhausted) so the retry is counted.
+    engine.trigger("manual");
+    await engine.join();
+    spy.mockRestore();
+
+    expect(attempts).toBe(2);
+    expect(countEvents(repo, "pi")).toBe(1);
+    expect(piFreshInput(repo)).toBe(700);
+    expect(repo.getSource("pi-default")?.last_error).toBeNull();
+    // The successful retry run reports no errors.
+    const retryRun = repo.getSyncRun(repo.listSyncRuns(1)[0].id)!;
+    expect(JSON.parse(retryRun.errors_json)).toEqual([]);
+  });
+
+  it("reindexes OpenCode data when the adapter version changes", async () => {
+    // Data from other sources must survive the OpenCode reindex untouched.
+    writePiSession(piRoot, "sess-keep", 1);
+    writeModernCodexSession(codexRoot, "codex-keep");
+    writeOpencodeMultiSessionDatabase(opencodeRoot, [
+      { sessionId: "ses_oc_alpha", directory: "C:/opencode-alpha", userId: "msg_oc_u_a", assistantId: "msg_oc_a_a", cwd: "C:\\opencode-alpha" },
+      { sessionId: "ses_oc_beta", directory: "C:/opencode-beta", userId: "msg_oc_u_b", assistantId: "msg_oc_a_b", cwd: "C:\\opencode-beta" },
+    ]);
+    engine.trigger("manual");
+    await engine.join();
+    expect(countEvents(repo, "opencode")).toBe(2);
+    expect(countEvents(repo, "pi")).toBe(1);
+    expect(countEvents(repo, "codex")).toBe(1);
+
+    // The beta conversation is deleted upstream and the stored adapter
+    // version regresses, as if the index predates an adapter upgrade.
+    rmSync(join(opencodeRoot, "opencode.db"));
+    writeOpencodeMultiSessionDatabase(opencodeRoot, [
+      { sessionId: "ses_oc_alpha", directory: "C:/opencode-alpha", userId: "msg_oc_u_a", assistantId: "msg_oc_a_a", cwd: "C:\\opencode-alpha" },
+    ]);
+    repo["db"]
+      .prepare(`UPDATE collector_sources SET adapter_version = 'opencode-2' WHERE id = 'opencode-database'`)
+      .run();
+
+    engine.trigger("manual");
+    await engine.join();
+
+    // Stale events, sessions, turns, raw records, and message nodes for the
+    // conversation that no longer exists in the source database are gone.
+    expect(countEvents(repo, "opencode")).toBe(1);
+    const event = repo["db"]
+      .prepare(`SELECT logical_session_id FROM usage_events WHERE harness = 'opencode'`)
+      .get() as any;
+    expect(event.logical_session_id).toBe("ses_oc_alpha");
+    const sessions = repo["db"]
+      .prepare(`SELECT logical_session_id FROM sessions WHERE harness = 'opencode'`)
+      .all() as any[];
+    expect(sessions.map((s) => s.logical_session_id)).toEqual(["ses_oc_alpha"]);
+    const turns = repo["db"]
+      .prepare(`SELECT COUNT(*) AS c FROM turns WHERE session_id LIKE 'opencode:%'`)
+      .get() as any;
+    expect(turns.c).toBe(1);
+    const raw = repo["db"]
+      .prepare(`SELECT COUNT(*) AS c FROM raw_usage_records WHERE source_id = 'opencode-database'`)
+      .get() as any;
+    expect(raw.c).toBe(1);
+    const nodes = repo["db"]
+      .prepare(`SELECT COUNT(DISTINCT logical_session_id) AS c FROM source_message_nodes WHERE source_id = 'opencode-database'`)
+      .get() as any;
+    expect(nodes.c).toBe(1);
+    expect(repo.getSource("opencode-database").adapter_version).toBe(OPENCODE_ADAPTER_VERSION);
+
+    // Other sources are untouched by the source-only reindex.
+    expect(countEvents(repo, "pi")).toBe(1);
+    expect(countEvents(repo, "codex")).toBe(1);
   });
 
   it("a parser failure in one source does not roll back another", async () => {
