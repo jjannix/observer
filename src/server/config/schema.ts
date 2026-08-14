@@ -111,6 +111,7 @@ export function defaultConfig(): ObserverConfig {
       { id: "codex-sessions", harness: "codex", label: "Codex (sessions)", root: roots.codexSessions, enabled: true },
       { id: "codex-archived", harness: "codex", label: "Codex (archived)", root: roots.codexArchived, enabled: true },
       { id: "claude-code-projects", harness: "claude-code", label: "Claude Code", root: roots.claudeCodeProjects, enabled: true },
+      { id: "opencode-database", harness: "opencode", label: "OpenCode", root: roots.opencodeData, enabled: true },
     ],
     providerAliases: SEED_PROVIDER_ALIASES,
     providerOverrides: [],

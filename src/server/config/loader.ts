@@ -54,18 +54,23 @@ export function loadConfig(configPath: string): LoadResult {
   }
 
   const config = result.data;
-  // Version 1 configs predate the Claude Code collector. Sources cannot be
-  // added or removed in the UI, so append the new default once while
-  // preserving all existing settings and source edits.
-  if (!config.sources.some((source) => source.harness === "claude-code")) {
-    const claudeSource = defaultConfig().sources.find((source) => source.id === "claude-code-projects");
-    if (claudeSource) {
-      config.sources.push(claudeSource);
-      saveConfig(configPath, config);
-    }
-  }
+  // Version 1 configs predate the Claude Code and OpenCode collectors.
+  // Sources cannot be added or removed in the UI, so append each new default
+  // once while preserving all existing settings and source edits.
+  const appended =
+    appendMissingDefaultSource(config, "claude-code", "claude-code-projects") |
+    appendMissingDefaultSource(config, "opencode", "opencode-database");
+  if (appended) saveConfig(configPath, config);
 
   return { config, created: false };
+}
+
+function appendMissingDefaultSource(config: ObserverConfig, harness: string, sourceId: string): 0 | 1 {
+  if (config.sources.some((source) => source.harness === harness)) return 0;
+  const source = defaultConfig().sources.find((candidate) => candidate.id === sourceId);
+  if (!source) return 0;
+  config.sources.push(source);
+  return 1;
 }
 
 export function saveConfig(configPath: string, config: ObserverConfig): void {

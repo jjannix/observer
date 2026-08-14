@@ -1,8 +1,6 @@
 # Observer
 
-Local-first usage analytics for AI coding harnesses. This milestone delivers **Pi**, **Codex**, and **Claude Code** collectors with historical backfill, canonical token accounting, and a diagnostic dark-mode UI — all running on `127.0.0.1` with no network calls, no telemetry, and no authentication.
-
-The OpenCode collector remains deferred; the schema and collector contract already accommodate it.
+Local-first usage analytics for AI coding harnesses. This milestone delivers **Pi**, **Codex**, **Claude Code**, and **OpenCode** collectors with historical backfill, canonical token accounting, and a diagnostic dark-mode UI — all running on `127.0.0.1` with no network calls, no telemetry, and no authentication.
 
 ## Quick start
 
@@ -50,6 +48,7 @@ npm run lint
 - **Pi source:** `%USERPROFILE%\.pi\agent\sessions`
 - **Codex sources:** `%USERPROFILE%\.codex\sessions` and `%USERPROFILE%\.codex\archived_sessions`
 - **Claude Code source:** `CLAUDE_CONFIG_DIR\projects` or `%USERPROFILE%\.claude\projects` (override with `CLAUDE_CODE_PROJECTS_ROOT`)
+- **OpenCode source:** `XDG_DATA_HOME\opencode` or `%USERPROFILE%\.local\share\opencode` (override with `OPENCODE_DATA_DIR`)
 
 Paths are auto-detected, editable, and individually disableable. Changing the history cutoff requires **Save and rebuild**. Rebuild deletes and recreates **only Observer's index**; harness source data is never modified.
 
@@ -100,6 +99,20 @@ Observer recursively scans Claude Code's local session and subagent transcripts.
 - The transcript records the model but not the delivery route, so provider stays unknown unless a provider override is configured. Reasoning-token and per-request cost fields are also unavailable.
 
 Claude Code documents the transcript format as internal and subject to change; the collector is therefore versioned so an adapter update triggers a source-only reindex. Transcripts are retained for 30 days by default. Some Claude Code versions/providers persist an early streaming `output_tokens` value rather than the final total, so historical output from transcripts can be understated. Claude Code's opt-in OpenTelemetry export is the supported choice for authoritative live organizational monitoring; Observer uses transcripts to preserve zero-setup, local-only backfill.
+
+### OpenCode normalization
+
+Observer reads OpenCode's local SQLite database (`opencode.db` in its data directory; verified against OpenCode 1.18) read-only. Assistant rows of the `message` table carry the full accounting vector: `tokens { input, output, reasoning, cache { read, write }, total }`, `cost`, `providerID`, `modelID`, and a `parentID` message graph for turn attribution.
+
+- Stable request identity is the OpenCode message id; one assistant message corresponds to one API response.
+- OpenCode's `output` excludes reasoning (their `total = input + cacheRead + output + reasoning`), so Observer folds reasoning into emitted output and keeps it visible as a subset — matching the canonical "output includes reasoning exactly once" rule.
+- OpenCode updates message rows while a response streams. Rows are consumed through a `time_updated` watermark (with tie exclusion), and a re-delivered row whose usage snapshot changed supersedes the earlier version for the same request — mid-stream snapshots never double-count.
+- Aborted all-zero assistant rows are ignored; malformed row JSON and negative or non-integer token counts are quarantined.
+- `cost` is recorded per request when OpenCode reports it (zero-cost events count as covered, not missing).
+- Provider and model come straight from `providerID` / `modelID`; routing-only `~` prefixes are stripped during canonicalization, so routed forms (e.g. OpenRouter) collapse onto the same canonical model.
+- Deleted/compacted messages are not re-synced; historical accounting is retained.
+
+OpenCode's database schema is internal and subject to change; the collector is versioned so an adapter update triggers a source-only reindex. The database is opened read-only with a busy timeout, and never written. WAL sidecars are folded into change detection so incremental syncs notice un-checkpointed writes.
 
 ## Project & identity resolution
 
@@ -167,7 +180,7 @@ src/
   client/            React + Vite + TanStack Query/Table (overview, events, settings)
   server/
     api/             Fastify routes + analytics queries
-    collectors/      contract, Pi, Codex, Claude Code, JSONL streaming, envelope hashing
+    collectors/      contract, Pi, Codex, Claude Code, OpenCode, JSONL streaming, envelope hashing
     config/          versioned config, paths, Zod schema
     db/              better-sqlite3 + drizzle schema + migration runner
     normalization/   canonical keys, resolution, metric formulas

@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync, renameSync, unlinkSync, appendFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import Database from "better-sqlite3";
 import { Repository } from "../../src/server/sync/repository.js";
 import { SyncEngine } from "../../src/server/sync/engine.js";
 import { makeDb } from "../helpers/db.js";
@@ -13,6 +14,7 @@ let piRoot: string;
 let codexRoot: string;
 let codexArchivedRoot: string;
 let claudeCodeRoot: string;
+let opencodeRoot: string;
 
 function newConfig(): ObserverConfig {
   const cfg = defaultConfig();
@@ -21,6 +23,7 @@ function newConfig(): ObserverConfig {
     { id: "codex-sessions", harness: "codex", label: "Codex", root: codexRoot, enabled: true },
     { id: "codex-archived", harness: "codex", label: "Codex (archived)", root: codexArchivedRoot, enabled: true },
     { id: "claude-code-projects", harness: "claude-code", label: "Claude Code", root: claudeCodeRoot, enabled: true },
+    { id: "opencode-database", harness: "opencode", label: "OpenCode", root: opencodeRoot, enabled: true },
   ];
   cfg.projectAliases = [];
   return cfg;
@@ -176,6 +179,72 @@ function writeClaudeCodeSession(dir: string, name: string) {
   writeFileSync(join(dir, `${name}.jsonl`), lines.map((line) => JSON.stringify(line)).join("\n") + "\n", "utf8");
 }
 
+function writeOpencodeDatabase(dir: string, finalized = false) {
+  const path = join(dir, "opencode.db");
+  const db = new Database(path);
+  db.pragma("journal_mode = WAL");
+  db.exec(`
+    CREATE TABLE session (
+      id text PRIMARY KEY,
+      project_id text NOT NULL,
+      parent_id text,
+      directory text NOT NULL,
+      time_created integer NOT NULL,
+      time_updated integer NOT NULL
+    );
+    CREATE TABLE message (
+      id text PRIMARY KEY,
+      session_id text NOT NULL,
+      time_created integer NOT NULL,
+      time_updated integer NOT NULL,
+      data text NOT NULL
+    );
+  `);
+  db.prepare(
+    "INSERT INTO session (id, project_id, parent_id, directory, time_created, time_updated) VALUES (?, ?, ?, ?, ?, ?)",
+  ).run("ses_oc_1", "global", null, "C:/opencode-project", 1786388300000, 1786388400000);
+  const user = {
+    role: "user",
+    agent: "build",
+    model: { providerID: "openrouter", modelID: "~deepseek/deepseek-v4-flash-latest" },
+    time: { created: 1786388366000 },
+  };
+  const assistant = {
+    parentID: "msg_oc_user_1",
+    role: "assistant",
+    mode: "build",
+    agent: "build",
+    path: { cwd: "C:\\opencode-project", root: "C:\\opencode-project" },
+    cost: 0.00054602352,
+    tokens: finalized
+      ? { total: 9275, input: 6390, output: 1093, reasoning: 0, cache: { read: 1792, write: 0 } }
+      : { total: 8229, input: 6390, output: 47, reasoning: 0, cache: { read: 1792, write: 0 } },
+    modelID: "~deepseek/deepseek-v4-flash-latest",
+    providerID: "openrouter",
+    time: { created: 1786388366292, completed: 1786388370771 },
+    finish: "tool-calls",
+  };
+  const insert = db.prepare(
+    "INSERT INTO message (id, session_id, time_created, time_updated, data) VALUES (?, ?, ?, ?, ?)",
+  );
+  insert.run("msg_oc_user_1", "ses_oc_1", 1786388366000, 1786388366000, JSON.stringify(user));
+  insert.run("msg_oc_asst_1", "ses_oc_1", 1786388366292, 1786388370771, JSON.stringify(assistant));
+  db.close();
+  return path;
+}
+
+function finalizeOpencodeMessage(dir: string) {
+  const db = new Database(join(dir, "opencode.db"));
+  const row = db.prepare("SELECT data FROM message WHERE id = 'msg_oc_asst_1'").get() as any;
+  const data = JSON.parse(row.data);
+  data.tokens = { total: 9275, input: 6390, output: 1093, reasoning: 0, cache: { read: 1792, write: 0 } };
+  db.prepare("UPDATE message SET data = ?, time_updated = ? WHERE id = 'msg_oc_asst_1'").run(
+    JSON.stringify(data),
+    1786388372000,
+  );
+  db.close();
+}
+
 describe("sync lifecycle", () => {
   let db: ReturnType<typeof makeDb>;
   let repo: Repository;
@@ -187,6 +256,7 @@ describe("sync lifecycle", () => {
     codexRoot = mkdtempSync(join(tmpdir(), "obs-codex-"));
     codexArchivedRoot = mkdtempSync(join(tmpdir(), "obs-codex-a-"));
     claudeCodeRoot = mkdtempSync(join(tmpdir(), "obs-claude-code-"));
+    opencodeRoot = mkdtempSync(join(tmpdir(), "obs-opencode-"));
     db = makeDb();
     repo = new Repository(db.raw);
     config = newConfig();
@@ -199,6 +269,7 @@ describe("sync lifecycle", () => {
     rmSync(codexRoot, { recursive: true, force: true });
     rmSync(codexArchivedRoot, { recursive: true, force: true });
     rmSync(claudeCodeRoot, { recursive: true, force: true });
+    rmSync(opencodeRoot, { recursive: true, force: true });
   });
 
   it("two full syncs produce identical totals", async () => {
@@ -495,6 +566,71 @@ describe("sync lifecycle", () => {
       .prepare(`SELECT output_tokens FROM usage_events WHERE harness = 'claude-code'`)
       .get() as any;
     expect(event.output_tokens).toBe(222);
+  });
+
+  it("imports OpenCode database usage with reasoning folded into output", async () => {
+    const path = writeOpencodeDatabase(opencodeRoot, true);
+
+    engine.trigger("manual");
+    await engine.join();
+
+    expect(countEvents(repo, "opencode")).toBe(1);
+    const event = repo["db"]
+      .prepare(
+        `SELECT occurred_at, fresh_input_tokens, cache_read_input_tokens,
+                cache_write_input_tokens, output_tokens, reasoning_output_tokens,
+                cost_nano_usd, raw_provider_id, raw_model_id, canonical_model_id
+         FROM usage_events WHERE harness = 'opencode'`,
+      )
+      .get() as any;
+    expect(event).toMatchObject({
+      occurred_at: "2026-08-10T18:59:26.292Z",
+      fresh_input_tokens: 6390,
+      cache_read_input_tokens: 1792,
+      cache_write_input_tokens: 0,
+      output_tokens: 1093,
+      reasoning_output_tokens: 0,
+      cost_nano_usd: 546024,
+      raw_provider_id: "openrouter",
+      raw_model_id: "~deepseek/deepseek-v4-flash-latest",
+      canonical_model_id: "deepseek/deepseek-v4-flash-latest",
+    });
+    expect(repo.countWarnings()).toBe(0);
+
+    // Unchanged database: a second sync is a no-op.
+    const statBefore = (await import("node:fs")).statSync(path);
+    engine.trigger("manual");
+    await engine.join();
+    expect(countEvents(repo, "opencode")).toBe(1);
+    const statAfter = (await import("node:fs")).statSync(path);
+    expect(statAfter.mtimeMs).toBe(statBefore.mtimeMs);
+  });
+
+  it("supersedes OpenCode streaming snapshots when rows are finalized", async () => {
+    writeOpencodeDatabase(opencodeRoot);
+    engine.trigger("manual");
+    await engine.join();
+
+    let event = repo["db"]
+      .prepare(`SELECT output_tokens FROM usage_events WHERE harness = 'opencode'`)
+      .get() as any;
+    expect(event.output_tokens).toBe(47);
+
+    finalizeOpencodeMessage(opencodeRoot);
+    engine.trigger("manual");
+    await engine.join();
+
+    event = repo["db"]
+      .prepare(`SELECT output_tokens FROM usage_events WHERE harness = 'opencode'`)
+      .get() as any;
+    expect(countEvents(repo, "opencode")).toBe(1);
+    expect(event.output_tokens).toBe(1093);
+    const duplicates = repo["db"]
+      .prepare(
+        `SELECT COUNT(*) AS c FROM raw_usage_records WHERE normalization_status = 'duplicate' AND logical_session_id = 'opencode'`,
+      )
+      .get() as any;
+    expect(duplicates.c).toBe(1);
   });
 
   it("reindexes Codex files when the adapter version changes", async () => {
