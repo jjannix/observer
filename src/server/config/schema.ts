@@ -74,6 +74,7 @@ export const SEED_PROVIDER_ALIASES: ProviderAlias[] = [
   { raw: "mistral", display: "Mistral" },
   { raw: "deepseek", display: "DeepSeek" },
   { raw: "zai", display: "Z.AI" },
+  { raw: "moonshot", display: "Moonshot AI" },
   { raw: "x-ai", display: "xAI" },
   { raw: "groq", display: "Groq" },
   { raw: "together", display: "Together" },

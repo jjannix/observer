@@ -203,6 +203,35 @@ describe("canonical provider keys", () => {
     expect(canonicalizeModelId("deepseek-v4-pro")).toBe("deepseek/deepseek-v4-pro");
     expect(canonicalizeModelId("deepseek/deepseek-v4-pro")).toBe("deepseek/deepseek-v4-pro");
   });
+
+  it("collapses the Kimi provider spellings onto Moonshot AI", () => {
+    for (const raw of ["kimi", "kimi-coding", "kimi-for-coding", "moonshot-ai"]) {
+      expect(canonicalizeProviderId(raw)).toBe("moonshot");
+    }
+
+    const coding = resolveDimensions({
+      harness: "pi",
+      rawProviderId: "kimi-coding",
+      rawModelId: "kimi-k3",
+      cwd: null,
+      occurredAt: "2026-08-13T00:00:00Z",
+      providerAliases: SEED_PROVIDER_ALIASES,
+      providerOverrides: [],
+      modelAliases: SEED_MODEL_ALIASES,
+    });
+    expect(coding.canonicalProviderId).toBe("moonshot");
+    expect(coding.canonicalModelId).toBe("moonshot/kimi-k3");
+    expect(coding.owner).toBe("moonshot");
+  });
+
+  it("recognizes the Kimi model family and routed spellings", () => {
+    for (const model of ["kimi-k2.6", "kimi-k3"]) {
+      expect(modelOwner(model)).toBe("moonshot");
+    }
+    // The routed OpenRouter-style spelling joins the same canonical model.
+    expect(canonicalizeModelId("moonshotai/kimi-k2.6")).toBe("moonshot/kimi-k2.6");
+    expect(canonicalizeModelId("kimi-k2.6")).toBe("moonshot/kimi-k2.6");
+  });
 });
 
 describe("Claude model ownership", () => {
