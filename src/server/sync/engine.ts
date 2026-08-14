@@ -155,6 +155,13 @@ export class SyncEngine {
     const discovered = collector.discover(source.root, ctx);
     const now = new Date().toISOString();
 
+    // Capture the stored signature of every discovered file BEFORE the
+    // upserts overwrite it: the skip below must compare against the last
+    // completed sync, not against values written moments ago.
+    const previousByLogicalId = new Map(
+      discovered.map((f) => [f.logicalSessionId, this.repo.getSourceFile(source.id, f.logicalSessionId)]),
+    );
+
     for (const f of discovered) {
       this.repo.upsertSourceFile({
         sourceId: source.id,
@@ -176,20 +183,22 @@ export class SyncEngine {
     let quarantined = 0;
 
     for (const f of discovered) {
+      const previous = previousByLogicalId.get(f.logicalSessionId);
       const fileRow = this.repo.getSourceFile(source.id, f.logicalSessionId);
       if (!fileRow) continue;
-      if (
-        fileRow.size === f.size &&
-        fileRow.mtimeMs === f.mtimeMs &&
-        fileRow.byteCursor >= f.size &&
-        f.size > 0
-      ) {
-        continue;
-      }
+      if (shouldSkipSourceFile(previous, f)) continue;
 
       let byteCursor = fileRow.byteCursor;
       let lineCursor = fileRow.lineCursor;
       let parserState = fileRow.parserState;
+      if (f.size > 0 && byteCursor >= f.size) {
+        // The stored cursor claims EOF, but the skip above already ruled out
+        // an unchanged signature — the file was rewritten in place (SQLite
+        // page update, vacuum, WAL checkpoint) or replaced. Restart from the
+        // beginning; parser watermarks and envelope-hash dedupe make the
+        // re-read idempotent.
+        byteCursor = 0;
+      }
       for (;;) {
         if (byteCursor >= f.size && f.size > 0) break;
         let result;
@@ -396,6 +405,29 @@ export class SyncEngine {
     });
     return { runId, status: "started" };
   }
+}
+
+/**
+ * Decide whether a discovered file can be skipped entirely this sync. Only a
+ * file whose signature (path, size, mtime) is identical to the last
+ * completed sync AND whose cursor reached the file size may be skipped:
+ * any signature change — including a shrink below the consumed cursor
+ * (SQLite vacuum, file rewrite) — forces at least one collection pass,
+ * where parser watermarks and envelope-hash dedupe keep the re-read
+ * idempotent.
+ */
+export function shouldSkipSourceFile(
+  previous: { currentPath: string; size: number; mtimeMs: number; byteCursor: number } | undefined,
+  current: { path: string; size: number; mtimeMs: number },
+): boolean {
+  if (!previous) return false;
+  if (current.size <= 0) return false;
+  return (
+    previous.currentPath === current.path &&
+    previous.size === current.size &&
+    previous.mtimeMs === current.mtimeMs &&
+    previous.byteCursor >= current.size
+  );
 }
 
 /**

@@ -13,7 +13,7 @@ import type {
   DiscoveredFile,
 } from "../contract.js";
 
-export const OPENCODE_ADAPTER_VERSION = "opencode-1";
+export const OPENCODE_ADAPTER_VERSION = "opencode-2";
 
 interface MessageRow {
   rowid: number;
@@ -31,14 +31,32 @@ interface MessageNode {
   role: string | null;
 }
 
+/** In-flight rowid sweep across the pending set (null once fully drained). */
+interface SweepState {
+  /** Exclusive lower rowid bound of the next window. */
+  scanRowid: number;
+  /** Largest time_updated consumed during this sweep (committed at drain). */
+  maxUpdated: number;
+  /** Row ids consumed exactly at `maxUpdated` (tie exclusion after commit). */
+  boundaryIds: string[];
+}
+
+/** Database generation observed at the start of the last sweep. */
+interface Generation {
+  messageCount: number;
+  maxUpdated: number;
+}
+
 interface OpenCodeParserState {
   /** Largest message.time_updated consumed so far (epoch ms watermark). */
   watermark: number;
   /** Row ids consumed exactly at the watermark (excluded on the next pass). */
   boundaryIds: string[];
   nodes: Record<string, MessageNode>;
-  /** message id -> serialized usage snapshot (change + supersession detection). */
+  /** message id -> serialized accounting snapshot (change + supersession detection). */
   snapshots: Record<string, string>;
+  sweep: SweepState | null;
+  generation: Generation | null;
 }
 
 interface ParsedToken {
@@ -48,7 +66,7 @@ interface ParsedToken {
 }
 
 function emptyState(): OpenCodeParserState {
-  return { watermark: 0, boundaryIds: [], nodes: {}, snapshots: {} };
+  return { watermark: 0, boundaryIds: [], nodes: {}, snapshots: {}, sweep: null, generation: null };
 }
 
 /**
@@ -62,19 +80,39 @@ function emptyState(): OpenCodeParserState {
  * `parentID` message graph.
  *
  * Contract mapping:
- * - `discover` surfaces the database file itself; size/mtime aggregate the
- *   `-wal`/`-shm` sidecars so change detection notices WAL growth between
- *   checkpoints.
- * - Rows are consumed through a `time_updated` watermark with tie exclusion
- *   (row ids at the watermark are held in parser state). OpenCode updates
- *   message rows while a response streams, so a re-delivered row with a
- *   changed usage snapshot supersedes the earlier version for the same
- *   request (message id), exactly like Claude Code's response snapshots.
- * - `byteCursor` stays 0: the SQLite cursor lives in parser state, and a
- *   byte offset must never mark the file fully consumed (the database can
- *   shrink on vacuum, which would deadlock a byte-based cursor).
+ * - `discover` surfaces the database file itself under the stable file
+ *   identity "opencode"; the change signature folds in a non-empty `-wal`
+ *   sidecar so change detection notices un-checkpointed writes. The `-shm`
+ *   sidecar and empty `-wal` files are deliberately excluded: both are
+ *   connection bookkeeping churned by every open — including Observer's own
+ *   read-only connects — so folding them in would keep the signature
+ *   permanently unstable and defeat the skip. Each emitted envelope instead
+ *   carries the row's `session_id` as its logical session identity, so every
+ *   OpenCode conversation becomes its own Observer session (the database
+ *   file is a container, not a conversation).
+ * - Pending rows are consumed through a `time_updated` watermark with tie
+ *   exclusion. OpenCode only indexes `message` by (session_id, time_created,
+ *   id), so filtering on `time_updated` cannot use an index: each window is
+ *   therefore an `INTEGER PRIMARY KEY` range scan with the watermark filter
+ *   applied in SQL — during a backfill this walks the table sequentially
+ *   instead of re-running a full scan + sort per 500-row batch. OpenCode
+ *   updates message rows while a response streams, so a re-delivered row
+ *   with a changed accounting snapshot supersedes the earlier version for
+ *   the same request (message id), exactly like Claude Code's response
+ *   snapshots.
+ * - `byteCursor` reports the discovered file size once the pending set is
+ *   fully drained (and 0 while windows remain), letting the engine's
+ *   size/mtime signature short-circuit unchanged databases. It never
+ *   advances past what was actually drained, and the engine re-reads from
+ *   the start when the file shrinks below the cursor (SQLite vacuum), so a
+ *   shrinking database cannot deadlock collection.
+ * - At the start of each sweep a cheap generation probe (row count + max
+ *   `time_updated`) validates the database identity. A replaced or restored
+ *   database (backup restore, migration, recreation) rolls count or max
+ *   timestamp backwards; the parser state is reset so older rows re-import
+ *   instead of being skipped by a stale watermark forever.
  * - OpenCode's `output` excludes reasoning while the canonical `output`
- *   includes it (their own `total = input + cacheRead + output + reasoning`),
+ *   includes it (their `total = input + cacheRead + output + reasoning`),
  *   so reasoning is folded into the emitted output and kept as a subset.
  */
 export class OpenCodeCollector implements Collector {
@@ -91,28 +129,55 @@ export class OpenCodeCollector implements Collector {
     }
 
     // WAL mode: committed writes land in the -wal sidecar until a checkpoint;
-    // fold sidecars into the change-detection signature.
+    // fold it into the change-detection signature. The -shm sidecar is
+    // excluded on purpose: every connection (including this collector's own
+    // read-only opens) rewrites its lock state, so it carries no stable
+    // change signal — only churn that would defeat the skip. An empty -wal
+    // (which read-only connections create) holds no committed frames and is
+    // likewise ignored, so the collector's own reads never disturb the
+    // signature.
     let size = db.size;
     let mtimeMs = db.mtimeMs;
-    for (const suffix of ["-wal", "-shm"]) {
-      try {
-        const sidecar = statSync(`${path}${suffix}`);
-        size += sidecar.size;
-        mtimeMs = Math.max(mtimeMs, sidecar.mtimeMs);
-      } catch {
-        // Sidecars exist only while the WAL is live.
+    try {
+      const wal = statSync(`${path}-wal`);
+      if (wal.size > 0) {
+        size += wal.size;
+        mtimeMs = Math.max(mtimeMs, wal.mtimeMs);
       }
+    } catch {
+      // No live WAL: everything is checkpointed into the main file.
     }
 
     return [{ logicalSessionId: "opencode", path, size, mtimeMs }];
   }
 
   async collectFile(file: DiscoveredFile, opts: CollectFileOptions): Promise<CollectResult> {
-    const state = opts.parserState ? safeParseState(opts.parserState) : emptyState();
+    let state = opts.parserState ? safeParseState(opts.parserState) : emptyState();
     const limit = typeof opts.maxLines === "number" && opts.maxLines > 0 ? Math.floor(opts.maxLines) : -1;
 
     const db = openReadonly(file.path);
     try {
+      if (!state.sweep) {
+        // A fresh sweep starts by validating the database generation: a
+        // replaced/restored database (count or max timestamp rolled back)
+        // resets the watermark so older rows re-import.
+        const generation = probeGeneration(db);
+        if (
+          state.generation &&
+          generation &&
+          (generation.messageCount < state.generation.messageCount ||
+            generation.maxUpdated < state.generation.maxUpdated)
+        ) {
+          state = emptyState();
+        }
+        if (generation) state.generation = generation;
+        state.sweep = {
+          scanRowid: 0,
+          maxUpdated: state.watermark,
+          boundaryIds: [...state.boundaryIds],
+        };
+      }
+
       const rows = fetchPendingRows(db, state, limit);
       const emits: CollectEmit[] = [];
 
@@ -148,11 +213,11 @@ export class OpenCodeCollector implements Collector {
         // not represent an API request.
         if (processedTokens(parsed.usage) === 0) continue;
 
-        const snapshot = JSON.stringify(parsed.usage);
+        const snapshot = accountingSnapshot(row, record, parsed.usage);
         if (state.snapshots[messageId] === snapshot) continue;
         state.snapshots[messageId] = snapshot;
 
-        // Rows stream in time_updated order, which does not preserve graph
+        // Windows arrive in rowid order, which does not preserve graph
         // order — a parent can be updated after its child — so missing
         // ancestors are resolved from the database on demand.
         registerAncestors(parentId, state, db, emits);
@@ -163,7 +228,17 @@ export class OpenCodeCollector implements Collector {
         emits.push({ kind: "usage", usage: { envelope } });
       }
 
-      advanceWatermark(state, rows);
+      advanceSweep(state.sweep, rows);
+
+      // A window shorter than the limit means the sweep reached the end of
+      // the table: commit the watermark and let the engine's signature skip
+      // the file until the database changes again.
+      const drained = limit < 0 || rows.length < limit;
+      if (drained) {
+        state.watermark = state.sweep.maxUpdated;
+        state.boundaryIds = state.sweep.boundaryIds;
+        state.sweep = null;
+      }
 
       const schemaFingerprint = opts.lineCursor === 0
         ? probeSqliteFingerprint(db, this.adapterVersion)
@@ -171,7 +246,7 @@ export class OpenCodeCollector implements Collector {
 
       return {
         emits,
-        byteCursor: 0,
+        byteCursor: drained ? file.size : 0,
         lineCursor: opts.lineCursor + rows.length,
         parserState: JSON.stringify(state),
         schemaFingerprint,
@@ -194,7 +269,13 @@ function openReadonly(path: string): Database.Database {
   }
 }
 
+/**
+ * Fetch the next pending window in rowid order. The watermark/tie filter is
+ * frozen for the duration of a sweep; `rowid >` keeps each window an
+ * efficient primary-key range seek instead of a full scan + sort.
+ */
 function fetchPendingRows(db: Database.Database, state: OpenCodeParserState, limit: number): MessageRow[] {
+  const sweep = state.sweep as SweepState;
   const boundary = state.boundaryIds;
   const tieClause = boundary.length > 0
     ? ` OR (m.time_updated = ? AND m.id NOT IN (${boundary.map(() => "?").join(",")}))`
@@ -205,31 +286,69 @@ function fetchPendingRows(db: Database.Database, state: OpenCodeParserState, lim
            s.directory AS session_directory, s.parent_id AS session_parent_id
     FROM message m
     LEFT JOIN session s ON s.id = m.session_id
-    WHERE m.time_updated > ?${tieClause}
-    ORDER BY m.time_updated, m.id
+    WHERE m.rowid > ? AND (m.time_updated > ?${tieClause})
+    ORDER BY m.rowid
     LIMIT ?
   `;
   const params: unknown[] = boundary.length > 0
-    ? [state.watermark, state.watermark, ...boundary, limit]
-    : [state.watermark, limit];
+    ? [sweep.scanRowid, state.watermark, state.watermark, ...boundary, limit]
+    : [sweep.scanRowid, state.watermark, limit];
   return db.prepare(sql).all(...params) as unknown as MessageRow[];
 }
 
-function advanceWatermark(state: OpenCodeParserState, rows: MessageRow[]): void {
-  if (rows.length === 0) return;
-  const maxUpdated = rows[rows.length - 1].time_updated; // rows are ordered
-  if (maxUpdated > state.watermark) {
-    state.watermark = maxUpdated;
-    state.boundaryIds = rows.filter((row) => row.time_updated === maxUpdated).map((row) => row.id);
-    return;
-  }
-  // The batch stopped inside a tie group at the current watermark; remember
-  // the consumed ids so the next pass resumes after them.
-  const consumed = new Set(state.boundaryIds);
+/** Fold a consumed window into the sweep cursor and candidate watermark. */
+function advanceSweep(sweep: SweepState, rows: MessageRow[]): void {
   for (const row of rows) {
-    if (row.time_updated === state.watermark) consumed.add(row.id);
+    if (row.time_updated > sweep.maxUpdated) {
+      sweep.maxUpdated = row.time_updated;
+      sweep.boundaryIds = [row.id];
+    } else if (row.time_updated === sweep.maxUpdated) {
+      sweep.boundaryIds.push(row.id);
+    }
   }
-  state.boundaryIds = [...consumed];
+  if (rows.length > 0) sweep.scanRowid = rows[rows.length - 1].rowid;
+}
+
+/**
+ * Cheap generation fingerprint of the whole table: row count + max
+ * time_updated. Returns null when the table cannot be probed.
+ */
+function probeGeneration(db: Database.Database): Generation | null {
+  try {
+    const row = db
+      .prepare("SELECT COUNT(*) AS messageCount, MAX(time_updated) AS maxUpdated FROM message")
+      .get() as { messageCount: number; maxUpdated: number | null } | undefined;
+    if (!row) return null;
+    return { messageCount: row.messageCount ?? 0, maxUpdated: row.maxUpdated ?? 0 };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Serialize every envelope-relevant accounting field of a row: usage (which
+ * carries cost), provider, model, timestamps, cwd, and parent/session
+ * attribution. A row re-delivered with any of these changed must supersede
+ * the earlier version; only non-accounting context (finish, mode, ...) is
+ * intentionally excluded.
+ */
+function accountingSnapshot(
+  row: MessageRow,
+  record: Record<string, unknown>,
+  usage: TokenUsageRecord,
+): string {
+  const time = asRecord(record.time);
+  return JSON.stringify({
+    usage,
+    providerId: stringValue(record.providerID),
+    modelId: stringValue(record.modelID),
+    parentId: stringValue(record.parentID),
+    cwd: stringValue(asRecord(record.path)?.cwd),
+    sessionDirectory: row.session_directory,
+    sessionParentId: row.session_parent_id,
+    timeCreated: time?.created ?? null,
+    timeCompleted: time?.completed ?? null,
+  });
 }
 
 function buildEnvelope(
@@ -247,7 +366,7 @@ function buildEnvelope(
 
   return {
     harness: "opencode" as const,
-    logicalSessionId: "opencode",
+    logicalSessionId: sessionId,
     requestId: nodeId,
     lineOrdinal: row.rowid,
     envelopeHash: "",
@@ -459,10 +578,41 @@ function safeParseState(raw: string): OpenCodeParserState {
         : [],
       nodes: asRecord(parsed.nodes) as Record<string, MessageNode> ?? {},
       snapshots: stringRecord(parsed.snapshots),
+      sweep: parseSweep(parsed.sweep),
+      generation: parseGeneration(parsed.generation),
     };
   } catch {
     return emptyState();
   }
+}
+
+function parseSweep(value: unknown): SweepState | null {
+  const sweep = asRecord(value);
+  if (!sweep) return null;
+  const scanRowid = typeof sweep.scanRowid === "number" && Number.isFinite(sweep.scanRowid)
+    ? sweep.scanRowid
+    : null;
+  const maxUpdated = typeof sweep.maxUpdated === "number" && Number.isFinite(sweep.maxUpdated)
+    ? sweep.maxUpdated
+    : null;
+  const boundaryIds = Array.isArray(sweep.boundaryIds)
+    ? sweep.boundaryIds.filter((id): id is string => typeof id === "string")
+    : null;
+  if (scanRowid == null || maxUpdated == null || boundaryIds == null) return null;
+  return { scanRowid, maxUpdated, boundaryIds };
+}
+
+function parseGeneration(value: unknown): Generation | null {
+  const generation = asRecord(value);
+  if (!generation) return null;
+  const messageCount = typeof generation.messageCount === "number" && Number.isFinite(generation.messageCount)
+    ? generation.messageCount
+    : null;
+  const maxUpdated = typeof generation.maxUpdated === "number" && Number.isFinite(generation.maxUpdated)
+    ? generation.maxUpdated
+    : null;
+  if (messageCount == null || maxUpdated == null) return null;
+  return { messageCount, maxUpdated };
 }
 
 function stringRecord(value: unknown): Record<string, string> {

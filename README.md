@@ -104,15 +104,17 @@ Claude Code documents the transcript format as internal and subject to change; t
 
 Observer reads OpenCode's local SQLite database (`opencode.db` in its data directory; verified against OpenCode 1.18) read-only. Assistant rows of the `message` table carry the full accounting vector: `tokens { input, output, reasoning, cache { read, write }, total }`, `cost`, `providerID`, `modelID`, and a `parentID` message graph for turn attribution.
 
-- Stable request identity is the OpenCode message id; one assistant message corresponds to one API response.
+- Stable request identity is the OpenCode message id; one assistant message corresponds to one API response. Each conversation's `session_id` becomes the logical session identity, so every OpenCode conversation appears as its own session (the database file is a container, not a conversation).
 - OpenCode's `output` excludes reasoning (their `total = input + cacheRead + output + reasoning`), so Observer folds reasoning into emitted output and keeps it visible as a subset — matching the canonical "output includes reasoning exactly once" rule.
-- OpenCode updates message rows while a response streams. Rows are consumed through a `time_updated` watermark (with tie exclusion), and a re-delivered row whose usage snapshot changed supersedes the earlier version for the same request — mid-stream snapshots never double-count.
+- OpenCode updates message rows while a response streams. Rows are consumed through a `time_updated` watermark (with tie exclusion), and a re-delivered row whose accounting snapshot changed — tokens, cost, provider, model, timestamp, cwd, or parent attribution — supersedes the earlier version for the same request; mid-stream snapshots never double-count.
+- Pending rows are fetched in `rowid` windows with the watermark filter applied in SQL: OpenCode indexes `message` only by `(session_id, time_created, id)`, so windows walk the table sequentially instead of re-running a full scan + sort per batch during backfills. Once the pending set drains, the byte cursor reaches the discovered file size and the size/mtime signature skips the database entirely until it changes again.
+- A replaced, restored, or recreated database is detected by a per-sweep generation probe (row count + max `time_updated`); a rollback resets the watermark so older rows re-import instead of being skipped forever.
 - Aborted all-zero assistant rows are ignored; malformed row JSON and negative or non-integer token counts are quarantined.
 - `cost` is recorded per request when OpenCode reports it (zero-cost events count as covered, not missing).
 - Provider and model come straight from `providerID` / `modelID`; routing-only `~` prefixes are stripped during canonicalization, so routed forms (e.g. OpenRouter) collapse onto the same canonical model.
 - Deleted/compacted messages are not re-synced; historical accounting is retained.
 
-OpenCode's database schema is internal and subject to change; the collector is versioned so an adapter update triggers a source-only reindex. The database is opened read-only with a busy timeout, and never written. WAL sidecars are folded into change detection so incremental syncs notice un-checkpointed writes.
+OpenCode's database schema is internal and subject to change; the collector is versioned so an adapter update triggers a source-only reindex. The database is opened read-only with a busy timeout, and never written. A non-empty WAL sidecar is folded into change detection so incremental syncs notice un-checkpointed writes; the shared-memory sidecar (and empty WAL files, which read-only connections create) are excluded because they churn on every connection and would defeat the skip.
 
 ## Project & identity resolution
 

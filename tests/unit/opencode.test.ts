@@ -173,7 +173,7 @@ describe("OpenCode collector", () => {
     expect(envelopes).toHaveLength(1);
     expect(envelopes[0]).toMatchObject({
       harness: "opencode",
-      logicalSessionId: "opencode",
+      logicalSessionId: "ses_1",
       sessionId: "ses_1",
       requestId: "msg_asst_1",
       occurredAt: "2026-08-10T18:59:26.292Z",
@@ -262,6 +262,40 @@ describe("OpenCode collector", () => {
     expect(quarantineReasons(result.emits)).toEqual(["malformed-json"]);
   });
 
+  it("keeps conversations from one database as separate logical sessions", async () => {
+    const messages: WriteMessage[] = [
+      { id: "msg_user_a", sessionId: "ses_a", timeCreated: 1786388366000, data: userMessage() },
+      { id: "msg_asst_a", sessionId: "ses_a", timeCreated: 1786388366292, timeUpdated: 1786388370771, data: assistantMessage({ parentID: "msg_user_a", path: { cwd: "C:\\projects\\alpha", root: "C:\\projects\\alpha" } }) },
+      {
+        id: "msg_user_b",
+        sessionId: "ses_b",
+        timeCreated: 1786389366000,
+        data: userMessage({ time: { created: 1786389366000 } }),
+      },
+      {
+        id: "msg_asst_b",
+        sessionId: "ses_b",
+        timeCreated: 1786389366292,
+        timeUpdated: 1786389370771,
+        data: assistantMessage({
+          parentID: "msg_user_b",
+          path: { cwd: "C:\\projects\\beta", root: "C:\\projects\\beta" },
+          time: { created: 1786389366292, completed: 1786389370771 },
+        }),
+      },
+    ];
+    const path = writeDatabase(messages, [
+      { id: "ses_a", directory: "C:/projects/alpha" },
+      { id: "ses_b", directory: "C:/projects/beta" },
+    ]);
+
+    const envelopes = usageEmits((await collect(path)).emits);
+    expect(envelopes.map((envelope) => [envelope.logicalSessionId, envelope.sessionId, envelope.cwd])).toEqual([
+      ["ses_a", "ses_a", "C:\\projects\\alpha"],
+      ["ses_b", "ses_b", "C:\\projects\\beta"],
+    ]);
+  });
+
   it("consumes appended rows incrementally through the watermark", async () => {
     const path = writeDatabase(defaultMessages());
     const first = await collect(path);
@@ -315,6 +349,51 @@ describe("OpenCode collector", () => {
     expect(envelopes[0].requestId).toBe("msg_asst_1");
   });
 
+  it("re-emits a row whose cost changed without a token change", async () => {
+    const path = writeDatabase(defaultMessages());
+    const first = await collect(path);
+    expect(usageEmits(first.emits)[0].usage.costUsd).toBe(0.00054602352);
+
+    updateMessage("msg_asst_1", assistantMessage({ cost: 0.002 }), 1786388372000);
+
+    const second = await collect(path, {
+      byteCursor: first.byteCursor,
+      lineCursor: first.lineCursor,
+      parserState: first.parserState,
+    });
+    const envelopes = usageEmits(second.emits);
+    expect(envelopes).toHaveLength(1);
+    expect(envelopes[0].usage.costUsd).toBe(0.002);
+  });
+
+  it("re-emits a row whose provider, model, or cwd changed without a token change", async () => {
+    const path = writeDatabase(defaultMessages());
+    const first = await collect(path);
+
+    updateMessage(
+      "msg_asst_1",
+      assistantMessage({
+        providerID: "anthropic",
+        modelID: "claude-opus-4-6",
+        path: { cwd: "C:\\projects\\elsewhere", root: "C:\\projects\\elsewhere" },
+      }),
+      1786388373000,
+    );
+
+    const second = await collect(path, {
+      byteCursor: first.byteCursor,
+      lineCursor: first.lineCursor,
+      parserState: first.parserState,
+    });
+    const envelopes = usageEmits(second.emits);
+    expect(envelopes).toHaveLength(1);
+    expect(envelopes[0]).toMatchObject({
+      rawProviderId: "anthropic",
+      rawModelId: "claude-opus-4-6",
+      cwd: "C:\\projects\\elsewhere",
+    });
+  });
+
   it("does not re-emit an unchanged snapshot", async () => {
     const path = writeDatabase(defaultMessages());
     const first = await collect(path);
@@ -341,6 +420,7 @@ describe("OpenCode collector", () => {
     const first = await collect(path, { maxLines: 1 });
     expect(usageEmits(first.emits)).toHaveLength(1);
     expect(usageEmits(first.emits)[0].requestId).toBe("msg_a");
+    expect(first.byteCursor).toBe(0); // window full: sweep still in progress
 
     const second = await collect(path, {
       lineCursor: first.lineCursor,
@@ -349,6 +429,7 @@ describe("OpenCode collector", () => {
     });
     expect(usageEmits(second.emits)).toHaveLength(1);
     expect(usageEmits(second.emits)[0].requestId).toBe("msg_b");
+    expect(second.byteCursor).toBe(0);
 
     const third = await collect(path, {
       lineCursor: second.lineCursor,
@@ -356,6 +437,14 @@ describe("OpenCode collector", () => {
       maxLines: 1,
     });
     expect(usageEmits(third.emits)).toHaveLength(0);
+    expect(third.byteCursor).toBe(statSync(path).size); // drained
+
+    const fourth = await collect(path, {
+      lineCursor: third.lineCursor,
+      parserState: third.parserState,
+      maxLines: 1,
+    });
+    expect(usageEmits(fourth.emits)).toHaveLength(0);
   });
 
   it("attributes turns when the parent row is updated after its child", async () => {
@@ -458,15 +547,89 @@ describe("OpenCode collector", () => {
     writeFileSync(walPath, Buffer.alloc(64 * 1024));
     const withWal = collector.discover(root, { sourceId: "opencode-database", historyCutoff: null })[0];
     expect(withWal.size).toBeGreaterThanOrEqual(afterCheckpoint.size + 64 * 1024);
+
+    // The -shm sidecar is lock state churned by every connection (including
+    // Observer's own read-only opens); it must NOT destabilize the signature,
+    // or the skip could never fire.
+    const shmPath = `${path}-shm`;
+    writeFileSync(shmPath, Buffer.alloc(32 * 1024));
+    const withShm = collector.discover(root, { sourceId: "opencode-database", historyCutoff: null })[0];
+    expect(withShm.size).toBe(withWal.size);
+    expect(withShm.mtimeMs).toBe(withWal.mtimeMs);
   });
 
   it("returns nothing when the database is absent", () => {
     expect(collector.discover(root, { sourceId: "opencode-database", historyCutoff: null })).toEqual([]);
   });
 
-  it("reports the byte cursor as zero so a shrinking database cannot deadlock", async () => {
+  it("backfills large databases through sequential rowid windows", async () => {
+    const messages: WriteMessage[] = [];
+    for (let i = 0; i < 1200; i++) {
+      messages.push({
+        id: `msg_bulk_${i}`,
+        timeCreated: 1786380000000 + i,
+        timeUpdated: 1786380000000 + i,
+        data: assistantMessage({
+          parentID: null,
+          tokens: { input: 1, output: 1, reasoning: 0, cache: { read: 0, write: 0 } },
+        }),
+      });
+    }
+    const path = writeDatabase(messages);
+
+    let options: Partial<CollectFileOptions> = { maxLines: 500 };
+    let total = 0;
+    let batches = 0;
+    const byteCursors: number[] = [];
+    for (;;) {
+      const result = await collect(path, options);
+      total += usageEmits(result.emits).length;
+      byteCursors.push(result.byteCursor);
+      batches++;
+      if (result.byteCursor > 0) break;
+      options = {
+        byteCursor: result.byteCursor,
+        lineCursor: result.lineCursor,
+        parserState: result.parserState,
+        maxLines: 500,
+      };
+    }
+    expect(batches).toBe(3);
+    expect(total).toBe(1200);
+    // Windows stay mid-file until the final drain reaches the file size.
+    expect(byteCursors).toEqual([0, 0, statSync(path).size]);
+  });
+
+  it("re-imports a restored database whose timestamps rolled back", async () => {
+    const path = writeDatabase(defaultMessages());
+    const first = await collect(path);
+    expect(usageEmits(first.emits)).toHaveLength(1);
+
+    // Simulate a backup restore / recreation: same path, fewer messages,
+    // timestamps below the consumed watermark.
+    rmSync(path);
+    writeDatabase([
+      {
+        id: "msg_asst_old",
+        timeCreated: 1786385000000,
+        timeUpdated: 1786385000000,
+        data: assistantMessage({ time: { created: 1786385000000, completed: 1786385000000 } }),
+      },
+    ]);
+
+    const second = await collect(path, {
+      byteCursor: first.byteCursor,
+      lineCursor: first.lineCursor,
+      parserState: first.parserState,
+    });
+    const envelopes = usageEmits(second.emits);
+    expect(envelopes).toHaveLength(1);
+    expect(envelopes[0].requestId).toBe("msg_asst_old");
+  });
+
+  it("advances the byte cursor to the file size once the pending set is drained", async () => {
     const path = writeDatabase(defaultMessages());
     const result = await collect(path);
-    expect(result.byteCursor).toBe(0);
+    expect(result.byteCursor).toBe(statSync(path).size);
   });
 });

@@ -180,6 +180,29 @@ function writeClaudeCodeSession(dir: string, name: string) {
 }
 
 function writeOpencodeDatabase(dir: string, finalized = false) {
+  return writeOpencodeMultiSessionDatabase(dir, [
+    {
+      sessionId: "ses_oc_1",
+      directory: "C:/opencode-project",
+      userId: "msg_oc_user_1",
+      assistantId: "msg_oc_asst_1",
+      cwd: "C:\\opencode-project",
+      finalized,
+    },
+  ]);
+}
+
+function writeOpencodeMultiSessionDatabase(
+  dir: string,
+  sessions: Array<{
+    sessionId: string;
+    directory: string;
+    userId: string;
+    assistantId: string;
+    cwd: string;
+    finalized?: boolean;
+  }>,
+) {
   const path = join(dir, "opencode.db");
   const db = new Database(path);
   db.pragma("journal_mode = WAL");
@@ -200,35 +223,39 @@ function writeOpencodeDatabase(dir: string, finalized = false) {
       data text NOT NULL
     );
   `);
-  db.prepare(
+  const insertSession = db.prepare(
     "INSERT INTO session (id, project_id, parent_id, directory, time_created, time_updated) VALUES (?, ?, ?, ?, ?, ?)",
-  ).run("ses_oc_1", "global", null, "C:/opencode-project", 1786388300000, 1786388400000);
-  const user = {
-    role: "user",
-    agent: "build",
-    model: { providerID: "openrouter", modelID: "~deepseek/deepseek-v4-flash-latest" },
-    time: { created: 1786388366000 },
-  };
-  const assistant = {
-    parentID: "msg_oc_user_1",
-    role: "assistant",
-    mode: "build",
-    agent: "build",
-    path: { cwd: "C:\\opencode-project", root: "C:\\opencode-project" },
-    cost: 0.00054602352,
-    tokens: finalized
-      ? { total: 9275, input: 6390, output: 1093, reasoning: 0, cache: { read: 1792, write: 0 } }
-      : { total: 8229, input: 6390, output: 47, reasoning: 0, cache: { read: 1792, write: 0 } },
-    modelID: "~deepseek/deepseek-v4-flash-latest",
-    providerID: "openrouter",
-    time: { created: 1786388366292, completed: 1786388370771 },
-    finish: "tool-calls",
-  };
-  const insert = db.prepare(
+  );
+  const insertMessage = db.prepare(
     "INSERT INTO message (id, session_id, time_created, time_updated, data) VALUES (?, ?, ?, ?, ?)",
   );
-  insert.run("msg_oc_user_1", "ses_oc_1", 1786388366000, 1786388366000, JSON.stringify(user));
-  insert.run("msg_oc_asst_1", "ses_oc_1", 1786388366292, 1786388370771, JSON.stringify(assistant));
+  sessions.forEach((session, index) => {
+    const base = 1786388300000 + index * 100_000;
+    insertSession.run(session.sessionId, "global", null, session.directory, base, base + 100_000);
+    const user = {
+      role: "user",
+      agent: "build",
+      model: { providerID: "openrouter", modelID: "~deepseek/deepseek-v4-flash-latest" },
+      time: { created: base + 66_000 },
+    };
+    const assistant = {
+      parentID: session.userId,
+      role: "assistant",
+      mode: "build",
+      agent: "build",
+      path: { cwd: session.cwd, root: session.cwd },
+      cost: 0.00054602352,
+      tokens: session.finalized
+        ? { total: 9275, input: 6390, output: 1093, reasoning: 0, cache: { read: 1792, write: 0 } }
+        : { total: 8229, input: 6390, output: 47, reasoning: 0, cache: { read: 1792, write: 0 } },
+      modelID: "~deepseek/deepseek-v4-flash-latest",
+      providerID: "openrouter",
+      time: { created: base + 66_292, completed: base + 70_771 },
+      finish: "tool-calls",
+    };
+    insertMessage.run(session.userId, session.sessionId, base + 66_000, base + 66_000, JSON.stringify(user));
+    insertMessage.run(session.assistantId, session.sessionId, base + 66_292, base + 70_771, JSON.stringify(assistant));
+  });
   db.close();
   return path;
 }
@@ -597,6 +624,15 @@ describe("sync lifecycle", () => {
     });
     expect(repo.countWarnings()).toBe(0);
 
+    // The pending set drained: the byte cursor reaches the discovered file
+    // size, which is what lets the next sync's size/mtime signature skip the
+    // database entirely instead of re-scanning it.
+    const fileRow = repo["db"]
+      .prepare(`SELECT byte_cursor, size FROM source_files WHERE source_id = 'opencode-database'`)
+      .get() as any;
+    expect(fileRow.byte_cursor).toBe(fileRow.size);
+    expect(fileRow.size).toBeGreaterThan(0);
+
     // Unchanged database: a second sync is a no-op.
     const statBefore = (await import("node:fs")).statSync(path);
     engine.trigger("manual");
@@ -627,10 +663,43 @@ describe("sync lifecycle", () => {
     expect(event.output_tokens).toBe(1093);
     const duplicates = repo["db"]
       .prepare(
-        `SELECT COUNT(*) AS c FROM raw_usage_records WHERE normalization_status = 'duplicate' AND logical_session_id = 'opencode'`,
+        `SELECT COUNT(*) AS c FROM raw_usage_records WHERE normalization_status = 'duplicate' AND logical_session_id = 'ses_oc_1'`,
       )
       .get() as any;
     expect(duplicates.c).toBe(1);
+  });
+
+  it("keeps OpenCode conversations in one database as separate sessions", async () => {
+    writeOpencodeMultiSessionDatabase(opencodeRoot, [
+      { sessionId: "ses_oc_alpha", directory: "C:/opencode-alpha", userId: "msg_oc_u_a", assistantId: "msg_oc_a_a", cwd: "C:\\opencode-alpha" },
+      { sessionId: "ses_oc_beta", directory: "C:/opencode-beta", userId: "msg_oc_u_b", assistantId: "msg_oc_a_b", cwd: "C:\\opencode-beta" },
+    ]);
+
+    engine.trigger("manual");
+    await engine.join();
+
+    // Two usage events, one per conversation.
+    expect(countEvents(repo, "opencode")).toBe(2);
+    const sessions = repo["db"]
+      .prepare(`SELECT id, logical_session_id, cwd FROM sessions WHERE harness = 'opencode' ORDER BY id`)
+      .all() as any[];
+    expect(sessions.map((s) => [s.id, s.cwd])).toEqual([
+      ["opencode:ses_oc_alpha", "C:\\opencode-alpha"],
+      ["opencode:ses_oc_beta", "C:\\opencode-beta"],
+    ]);
+    const events = repo["db"]
+      .prepare(`SELECT session_id, logical_session_id, request_id FROM usage_events WHERE harness = 'opencode' ORDER BY session_id`)
+      .all() as any[];
+    expect(events).toEqual([
+      { session_id: "opencode:ses_oc_alpha", logical_session_id: "ses_oc_alpha", request_id: "msg_oc_a_a" },
+      { session_id: "opencode:ses_oc_beta", logical_session_id: "ses_oc_beta", request_id: "msg_oc_a_b" },
+    ]);
+    // The sessions dimension stays per-conversation: distinct projects.
+    const projects = repo["db"]
+      .prepare(`SELECT DISTINCT e.project_id FROM usage_events e WHERE e.harness = 'opencode' ORDER BY e.project_id`)
+      .all() as any[];
+    expect(projects).toHaveLength(2);
+    expect(repo.countWarnings()).toBe(0);
   });
 
   it("reindexes Codex files when the adapter version changes", async () => {
