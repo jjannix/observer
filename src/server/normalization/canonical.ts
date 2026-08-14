@@ -40,6 +40,7 @@ const OWNER_BY_MODEL: Record<string, string> = {
   "gemini-2.0-flash": "google",
   "gemini-1.5-pro": "google",
   "deepseek-v3": "deepseek",
+  "deepseek-v4-pro": "deepseek",
   "deepseek-r1": "deepseek",
   "deepseek-chat": "deepseek",
   "grok-4": "x-ai",
@@ -47,9 +48,16 @@ const OWNER_BY_MODEL: Record<string, string> = {
   "llama-3.3-70b": "meta",
 };
 
-/** Provider routes that should roll up to the company serving the model. */
+/**
+ * Provider routes that should roll up to the company serving the model.
+ * Harnesses name the same serving company differently (OpenCode's coding-plan
+ * endpoint, Pi's model-family provider id); routes collapse them onto one
+ * canonical provider while raw attribution stays on the envelope.
+ */
 const PROVIDER_ROUTES: Record<string, string> = {
   "openai-codex": "openai",
+  "glm": "zai",
+  "zai-coding-plan": "zai",
 };
 
 export function modelOwner(rawModel: string | null): string | null {
@@ -58,6 +66,8 @@ export function modelOwner(rawModel: string | null): string | null {
   // Anthropic model ids frequently carry dated or point-release suffixes
   // (for example claude-opus-4-6 or claude-sonnet-4-5-20250929).
   if (cleaned.startsWith("claude-")) return "anthropic";
+  // Z.AI point-releases and turbo variants follow the glm-<version> family.
+  if (/^glm-\d/.test(cleaned)) return "zai";
   return OWNER_BY_MODEL[cleaned] ?? null;
 }
 

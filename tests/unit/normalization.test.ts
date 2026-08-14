@@ -154,6 +154,55 @@ describe("canonical provider keys", () => {
     expect(dims.canonicalProviderId).toBe("openai");
     expect(dims.providerResolution).toBe("seed-alias");
   });
+
+  it("collapses Pi's glm and OpenCode's zai-coding-plan onto Z.AI", () => {
+    expect(canonicalizeProviderId("glm")).toBe("zai");
+    expect(canonicalizeProviderId("zai-coding-plan")).toBe("zai");
+
+    const pi = resolveDimensions({
+      harness: "pi",
+      rawProviderId: "glm",
+      rawModelId: "glm-5.2",
+      cwd: null,
+      occurredAt: "2026-08-13T00:00:00Z",
+      providerAliases: SEED_PROVIDER_ALIASES,
+      providerOverrides: [],
+      modelAliases: SEED_MODEL_ALIASES,
+    });
+    const opencode = resolveDimensions({
+      harness: "opencode",
+      rawProviderId: "zai-coding-plan",
+      rawModelId: "glm-5.2",
+      cwd: null,
+      occurredAt: "2026-08-13T00:00:00Z",
+      providerAliases: SEED_PROVIDER_ALIASES,
+      providerOverrides: [],
+      modelAliases: SEED_MODEL_ALIASES,
+    });
+
+    expect(pi.rawProviderId).toBe("glm");
+    expect(opencode.rawProviderId).toBe("zai-coding-plan");
+    // Same canonical provider and model across harnesses.
+    expect(pi.canonicalProviderId).toBe("zai");
+    expect(opencode.canonicalProviderId).toBe("zai");
+    expect(pi.providerResolution).toBe("seed-alias");
+    expect(opencode.providerResolution).toBe("seed-alias");
+    expect(pi.canonicalModelId).toBe("zai/glm-5.2");
+    expect(opencode.canonicalModelId).toBe("zai/glm-5.2");
+    expect(pi.owner).toBe("zai");
+  });
+
+  it("recognizes the GLM model family across point releases", () => {
+    for (const model of ["glm-4.7", "glm-5", "glm-5.1", "glm-5.2", "glm-5.3", "glm-5-turbo"]) {
+      expect(modelOwner(model)).toBe("zai");
+    }
+    expect(canonicalizeModelId("glm-5.2")).toBe("zai/glm-5.2");
+  });
+
+  it("collapses bare and routed DeepSeek model ids", () => {
+    expect(canonicalizeModelId("deepseek-v4-pro")).toBe("deepseek/deepseek-v4-pro");
+    expect(canonicalizeModelId("deepseek/deepseek-v4-pro")).toBe("deepseek/deepseek-v4-pro");
+  });
 });
 
 describe("Claude model ownership", () => {

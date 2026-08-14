@@ -73,6 +73,7 @@ export const SEED_PROVIDER_ALIASES: ProviderAlias[] = [
   { raw: "openrouter", display: "OpenRouter" },
   { raw: "mistral", display: "Mistral" },
   { raw: "deepseek", display: "DeepSeek" },
+  { raw: "zai", display: "Z.AI" },
   { raw: "x-ai", display: "xAI" },
   { raw: "groq", display: "Groq" },
   { raw: "together", display: "Together" },
