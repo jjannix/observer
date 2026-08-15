@@ -189,8 +189,10 @@ describe("stop-hook script", () => {
     writeFileSync(scriptPath, buildStopHookScript(spool), "utf8");
 
     const payload = fullStopPayload();
+    // Cursor sends a UTF-8 BOM prefix and CRLF terminator on the wire.
+    const wirePayload = "\uFEFF" + JSON.stringify(payload) + "\r\n";
     execFileSync(process.execPath, [scriptPath], {
-      input: JSON.stringify(payload),
+      input: wirePayload,
       env: { ...process.env, CURSOR_PROJECT_DIR: "C:/proj/obs" },
     });
 
@@ -430,25 +432,38 @@ describe("collector", () => {
 });
 
 describe("legacy backfill", () => {
-  function makeCursorDb(dir: string, bubbles: Array<{ composer: string; bubble: string; usage?: string | null; in?: number; out?: number; time?: number }>, composers: Array<{ composerId: string; workspaceId: string; createdAt: number }>) {
+  function makeCursorDb(dir: string, bubbles: Array<{ composer: string; bubble: string; usage?: string | null; in?: number; out?: number; time?: number; userModel?: string | null }>, composers: Array<{ composerId: string; workspaceId: string; createdAt: number }>, conversationOrder: Record<string, string[]> = {}) {
     mkdirSync(dir, { recursive: true });
     const db = new Database(join(dir, "state.vscdb"));
     db.exec("CREATE TABLE cursorDiskKV ([key] TEXT UNIQUE ON CONFLICT REPLACE, value BLOB)");
     db.exec("CREATE TABLE composerHeaders (composerId TEXT, workspaceId TEXT, createdAt INTEGER)");
     const insert = db.prepare("INSERT INTO cursorDiskKV ([key], value) VALUES (?, ?)");
+    const orderPerComposer = new Map<string, string[]>();
     for (const b of bubbles) {
+      const isUser = b.userModel !== undefined;
+      const order = orderPerComposer.get(b.composer) ?? [];
+      order.push(b.bubble);
+      orderPerComposer.set(b.composer, order);
       insert.run(`bubbleId:${b.composer}:${b.bubble}`, JSON.stringify({
-        type: 2,
+        type: isUser ? 1 : 2,
         text: "PROMPT AND RESPONSE CONTENT",
         toolResults: [{ name: "edit", input: { code: "x" } }],
         allThinkingBlocks: [{ text: "thinking" }],
-        tokenCount: b.usage ? { inputTokens: b.in ?? 0, outputTokens: b.out ?? 0 } : { inputTokens: 0, outputTokens: 0 },
-        usageUuid: b.usage ?? null,
-        timingInfo: b.time != null ? { clientRpcSendTime: b.time } : null,
+        modelInfo: isUser && b.userModel ? { modelName: b.userModel } : undefined,
+        tokenCount: !isUser && b.usage ? { inputTokens: b.in ?? 0, outputTokens: b.out ?? 0 } : { inputTokens: 0, outputTokens: 0 },
+        usageUuid: !isUser ? b.usage ?? null : null,
+        timingInfo: !isUser && b.time != null ? { clientRpcSendTime: b.time } : null,
       }));
     }
     const header = db.prepare("INSERT INTO composerHeaders VALUES (?, ?, ?)");
     for (const c of composers) header.run(c.composerId, c.workspaceId, c.createdAt);
+    for (const c of composers) {
+      insert.run(`composerData:${c.composerId}`, JSON.stringify({
+        composerId: c.composerId,
+        createdAt: c.createdAt,
+        fullConversationHeadersOnly: (conversationOrder[c.composerId] ?? orderPerComposer.get(c.composerId) ?? []).map((id) => ({ bubbleId: id, type: 1 })),
+      }));
+    }
     db.close();
   }
 
@@ -539,6 +554,37 @@ describe("legacy backfill", () => {
     const content2 = readFileSync(second.outputFile!, "utf8");
     expect(content1).toBe(content2);
     expect(second.outputFile).toBe(first.outputFile);
+  });
+
+  it("attributes per-request models from same-turn user bubbles and skips 'default'", () => {
+    makeCursorDb(
+      dirname(args().globalDbPath),
+      [
+        // user picks grok for turn 1
+        { composer: "comp", bubble: "u-1", userModel: "grok-code-fast-1" },
+        { composer: "comp", bubble: "a-1", usage: "u-1", in: 100, out: 10 },
+        // user bubble with no model info: model carries forward
+        { composer: "comp", bubble: "u-2", userModel: null },
+        { composer: "comp", bubble: "a-2", usage: "u-2", in: 200, out: 20 },
+        // 'default' is treated as absent, so u-3 keeps the carried model
+        { composer: "comp", bubble: "u-3", userModel: "default" },
+        { composer: "comp", bubble: "a-3", usage: "u-3", in: 300, out: 30 },
+        // user switches to sonnet
+        { composer: "comp", bubble: "u-4", userModel: "claude-4.5-sonnet" },
+        { composer: "comp", bubble: "a-4", usage: "u-4", in: 400, out: 40 },
+      ],
+      [{ composerId: "comp", workspaceId: "empty-window", createdAt: 1000 }],
+      { comp: ["u-1", "a-1", "u-2", "a-2", "u-3", "a-3", "u-4", "a-4"] },
+    );
+    const summary = runLegacyBackfill(args());
+    expect(summary.imported).toBe(4);
+    expect(summary.eventsWithModel).toBe(4);
+    const lines = readFileSync(summary.outputFile!, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+    const modelOf = (id: string) => lines.find((l: any) => l.generationId === id).modelId;
+    expect(modelOf("u-1")).toBe("grok-code-fast-1");
+    expect(modelOf("u-2")).toBe("grok-code-fast-1");
+    expect(modelOf("u-3")).toBe("grok-code-fast-1");
+    expect(modelOf("u-4")).toBe("claude-4.5-sonnet");
   });
 
   it("reports missing databases and tables gracefully", () => {

@@ -102,6 +102,7 @@ async function cursorCommand(state: AppState, sub: string | undefined): Promise<
       console.log(`  imported events          : ${summary.imported}`);
       console.log(`  quarantined identities   : ${summary.quarantinedIdentities}`);
       console.log(`  exact timestamps         : ${summary.eventsWithExactTimestamp}`);
+      console.log(`  with model attribution   : ${summary.eventsWithModel}`);
       console.log(`  output                   : ${summary.outputFile ?? "-"}`);
       if (summary.imported > 0) {
         console.log("  Run `npm run observer -- sync` to import the events.");

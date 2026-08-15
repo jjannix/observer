@@ -27,10 +27,10 @@ function writeLiveFile(name: string, lines: string[], day = "2026-08-14"): void 
   writeFileSync(join(dir, name), lines.join("\n") + "\n", "utf8");
 }
 
-function writeBackfillFile(lines: string[]): void {
+function writeBackfillFile(name: string, lines: string[]): void {
   const dir = join(cursorSpool, "backfill", "import");
   mkdirSync(dir, { recursive: true });
-  writeFileSync(join(dir, "legacy.jsonl"), lines.join("\n") + "\n", "utf8");
+  writeFileSync(join(dir, name), lines.join("\n") + "\n", "utf8");
 }
 
 function sumProcessedInput(repo: Repository, harness = "cursor"): number {
@@ -135,7 +135,7 @@ describe("cursor sync", () => {
       ...JSON.parse(cursorEventLine({ conversation_id: "conv-1", generation_id: "gen-shared", input_tokens: 13816, output_tokens: 2251 })),
       source: "legacy-backfill",
     });
-    writeBackfillFile([legacy]);
+    writeBackfillFile("legacy-aaa.jsonl", [legacy]);
     writeLiveFile("live.jsonl", [
       cursorEventLine({ conversation_id: "conv-1", generation_id: "gen-shared", input_tokens: 200, output_tokens: 20, cache_read_tokens: 5 }),
     ]);

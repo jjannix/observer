@@ -67,8 +67,11 @@ function occurred(v) {
 
 readStdin(function (buf) {
   if (!buf) failOpen("stdin-too-large");
+  var text = buf.toString("utf8");
+  // Cursor sends a UTF-8 BOM prefix; JSON.parse rejects it.
+  if (text.charCodeAt(0) === 0xfeff) text = text.slice(1);
   var raw;
-  try { raw = JSON.parse(buf.toString("utf8")); } catch (e) { failOpen("payload-not-json"); return; }
+  try { raw = JSON.parse(text); } catch (e) { failOpen("payload-not-json"); return; }
   if (raw == null || typeof raw !== "object" || Array.isArray(raw)) { failOpen("payload-not-object"); return; }
   var rec = raw;
 
