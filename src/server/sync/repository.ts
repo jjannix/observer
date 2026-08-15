@@ -121,6 +121,14 @@ export class Repository {
     };
   }
 
+  /**
+   * Upsert the discovery view of a file: path, presence, and sync time.
+   * The size/mtime signature is deliberately NOT refreshed here — it is the
+   * signature of the last successfully committed collection batch, and the
+   * skip decision compares it against the live file. Overwriting it at
+   * discovery time would let a transient collection failure (on a same-size
+   * rewrite or shrink) permanently hide the change behind an EOF cursor.
+   */
   upsertSourceFile(row: {
     sourceId: string;
     logicalSessionId: string;
@@ -135,12 +143,12 @@ export class Repository {
       const pathChanged = existing.currentPath !== row.currentPath;
       this.db
         .prepare(
-          `UPDATE source_files SET current_path = ?, size = ?, mtime_ms = ?, present = 1,
+          `UPDATE source_files SET current_path = ?, present = 1,
              schema_fingerprint = ?, last_synced_at = ?
              ${pathChanged ? ", byte_cursor = 0, line_cursor = 0, parser_state = NULL" : ""}
            WHERE id = ?`,
         )
-        .run(row.currentPath, row.size, row.mtimeMs, row.schemaFingerprint, row.lastSyncedAt, existing.id);
+        .run(row.currentPath, row.schemaFingerprint, row.lastSyncedAt, existing.id);
       return { id: existing.id, pathChanged };
     }
     const info = this.db
@@ -154,16 +162,28 @@ export class Repository {
     return { id: Number(info.lastInsertRowid), pathChanged: false };
   }
 
+  /**
+   * Commit a collection batch: advance the cursor and record the file
+   * signature the cursor applies to, atomically. Because size/mtime only
+   * move here, the stored signature always describes the last successfully
+   * completed collection — a failed attempt leaves both untouched so the
+   * next sync retries the file instead of skipping it.
+   */
   setSourceFileCursor(
     id: number,
     byteCursor: number,
     lineCursor: number,
     parserState: string | null,
     lastSyncedAt: string,
+    size: number,
+    mtimeMs: number,
   ) {
     this.db
-      .prepare(`UPDATE source_files SET byte_cursor = ?, line_cursor = ?, parser_state = ?, last_synced_at = ? WHERE id = ?`)
-      .run(byteCursor, lineCursor, parserState, lastSyncedAt, id);
+      .prepare(
+        `UPDATE source_files SET byte_cursor = ?, line_cursor = ?, parser_state = ?,
+           size = ?, mtime_ms = ?, last_synced_at = ? WHERE id = ?`,
+      )
+      .run(byteCursor, lineCursor, parserState, size, mtimeMs, lastSyncedAt, id);
   }
 
   markMissingSourceFiles(sourceId: string, presentLogicalIds: string[]): number {
@@ -300,10 +320,20 @@ export class Repository {
       .run(finishedAt, phase, JSON.stringify(errors), id);
   }
 
+  /** Append an error to a run's error list, keeping `errors_json` valid JSON. */
   appendSyncRunError(id: string, error: string) {
-    this.db
-      .prepare(`UPDATE sync_runs SET errors_json = errors_json || ? WHERE id = ?`)
-      .run(JSON.stringify([error]), id);
+    const row = this.db.prepare(`SELECT errors_json FROM sync_runs WHERE id = ?`).get(id) as
+      | { errors_json: string }
+      | undefined;
+    let errors: string[] = [];
+    try {
+      const parsed = JSON.parse(row?.errors_json ?? "[]") as unknown;
+      if (Array.isArray(parsed)) errors = parsed.filter((e): e is string => typeof e === "string");
+    } catch {
+      /* start from an empty list */
+    }
+    errors.push(error);
+    this.db.prepare(`UPDATE sync_runs SET errors_json = ? WHERE id = ?`).run(JSON.stringify(errors), id);
   }
 
   getSyncRun(id: string) {
@@ -444,23 +474,65 @@ export class Repository {
 
   /* ------------------------------- rebuild --------------------------------- */
 
+  /**
+   * Remove every normalized and raw row belonging to one source, without
+   * touching other sources (even ones sharing the same harness).
+   *
+   * Container-style collectors (OpenCode) discover a single database file
+   * under a container identity ("opencode") while their envelopes carry
+   * per-conversation logical session ids, so `source_files` alone only
+   * knows the container row. The source's logical-session footprint must be
+   * derived from `raw_usage_records` as well. `usage_events.raw_record_id`
+   * cannot serve as the link: it is currently written as null, so events
+   * are matched on harness + logical_session_id instead.
+   */
   clearIndexForSource(sourceId: string) {
+    const logicalIds = `
+      SELECT logical_session_id FROM source_files WHERE source_id = @sid
+      UNION
+      SELECT logical_session_id FROM raw_usage_records WHERE source_id = @sid`;
+    this.db
+      .prepare(
+        `DELETE FROM usage_events
+         WHERE harness = (SELECT harness FROM collector_sources WHERE id = @sid)
+           AND logical_session_id IN (${logicalIds})`,
+      )
+      .run({ sid: sourceId });
+    this.db
+      .prepare(
+        `DELETE FROM turns
+         WHERE session_id IN (
+           SELECT id FROM sessions
+           WHERE harness = (SELECT harness FROM collector_sources WHERE id = @sid)
+             AND logical_session_id IN (${logicalIds})
+         )`,
+      )
+      .run({ sid: sourceId });
     this.db
       .prepare(
         `DELETE FROM sessions
-         WHERE harness = (SELECT harness FROM collector_sources WHERE id = ?)
-           AND logical_session_id IN (
-             SELECT logical_session_id FROM source_files WHERE source_id = ?
-           )`,
+         WHERE harness = (SELECT harness FROM collector_sources WHERE id = @sid)
+           AND logical_session_id IN (${logicalIds})`,
       )
-      .run(sourceId, sourceId);
+      .run({ sid: sourceId });
     this.db.prepare(`DELETE FROM raw_usage_records WHERE source_id = ?`).run(sourceId);
-    this.db.prepare(`DELETE FROM source_files WHERE source_id = ?`).run(sourceId);
     this.db.prepare(`DELETE FROM source_message_nodes WHERE source_id = ?`).run(sourceId);
+    this.db.prepare(`DELETE FROM source_files WHERE source_id = ?`).run(sourceId);
   }
 
+  /**
+   * Clear every canonical row for renormalize. Dimension tables (sessions,
+   * projects, providers, models) are rebuilt by the replay, so they must be
+   * cleared too — otherwise renamed canonical keys leave zombie filter rows.
+   * Children are deleted before parents to respect foreign keys.
+   */
   clearAllNormalized() {
     this.db.exec(`DELETE FROM usage_events`);
+    this.db.exec(`DELETE FROM turns`);
+    this.db.exec(`DELETE FROM sessions`);
+    this.db.exec(`DELETE FROM projects`);
+    this.db.exec(`DELETE FROM models`);
+    this.db.exec(`DELETE FROM providers`);
   }
 
   clearAllIndex() {

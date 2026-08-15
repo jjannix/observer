@@ -40,25 +40,46 @@ const OWNER_BY_MODEL: Record<string, string> = {
   "gemini-2.0-flash": "google",
   "gemini-1.5-pro": "google",
   "deepseek-v3": "deepseek",
+  "deepseek-v4-pro": "deepseek",
   "deepseek-r1": "deepseek",
   "deepseek-chat": "deepseek",
   "grok-4": "x-ai",
   "grok-3": "x-ai",
   "llama-3.3-70b": "meta",
+  "minimax-m3": "minimax",
+  "minimax-m2.7": "minimax",
 };
 
-/** Provider routes that should roll up to the company serving the model. */
+/**
+ * Provider routes that should roll up to the company serving the model.
+ * Harnesses name the same serving company differently (OpenCode's coding-plan
+ * endpoint, Pi's model-family provider id); routes collapse them onto one
+ * canonical provider while raw attribution stays on the envelope.
+ */
 const PROVIDER_ROUTES: Record<string, string> = {
   "openai-codex": "openai",
+  "glm": "zai",
+  "zai-coding-plan": "zai",
+  "kimi": "moonshot",
+  "kimi-coding": "moonshot",
+  "kimi-for-coding": "moonshot",
+  "moonshot-ai": "moonshot",
 };
 
 export function modelOwner(rawModel: string | null): string | null {
   if (!rawModel) return null;
   const cleaned = stripRoutingPrefix(rawModel).toLowerCase();
+  // Routed ids (OpenRouter-style `owner/model`) carry the family in the last
+  // segment; derive the owner from there.
+  const family = cleaned.includes("/") ? cleaned.split("/").pop()! : cleaned;
   // Anthropic model ids frequently carry dated or point-release suffixes
   // (for example claude-opus-4-6 or claude-sonnet-4-5-20250929).
-  if (cleaned.startsWith("claude-")) return "anthropic";
-  return OWNER_BY_MODEL[cleaned] ?? null;
+  if (family.startsWith("claude-")) return "anthropic";
+  // Z.AI point-releases and turbo variants follow the glm-<version> family.
+  if (/^glm-\d/.test(family)) return "zai";
+  // Moonshot's Kimi family (kimi-k2.6, kimi-k3, ...).
+  if (/^kimi-k\d/.test(family)) return "moonshot";
+  return OWNER_BY_MODEL[family] ?? OWNER_BY_MODEL[cleaned] ?? null;
 }
 
 /** Remove routing-only leading `~` and trim. */
@@ -67,6 +88,11 @@ export function stripRoutingPrefix(rawModel: string): string {
   while (m.startsWith("~")) m = m.slice(1).trim();
   return m;
 }
+
+/** Routed model-id prefixes that should normalize onto the owner namespace. */
+const MODEL_PREFIX_ROUTES: Record<string, string> = {
+  moonshotai: "moonshot",
+};
 
 /**
  * Canonical model key. Lowercased, routing prefix removed, owner-combined.
@@ -78,8 +104,13 @@ export function canonicalizeModelId(rawModel: string | null, owner?: string | nu
   if (!cleaned) return null;
   const o = (owner ?? modelOwner(rawModel))?.toLowerCase();
   if (!o) return cleaned;
-  // Avoid double-prefixing if the model id already carries an owner segment.
-  if (cleaned.includes("/")) return cleaned;
+  // Avoid double-prefixing if the model id already carries an owner segment;
+  // normalize known routing-only spellings onto the owner namespace.
+  if (cleaned.includes("/")) {
+    const [prefix, ...rest] = cleaned.split("/");
+    const routed = MODEL_PREFIX_ROUTES[prefix] ?? prefix;
+    return rest.length > 0 ? `${routed}/${rest.join("/")}` : cleaned;
+  }
   return `${o}/${cleaned}`;
 }
 

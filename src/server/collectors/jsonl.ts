@@ -122,7 +122,7 @@ export async function probeJsonlFingerprint(path: string, adapterVersion: string
   return h.toString(16);
 }
 
-function shapeSignature(value: unknown, depth = 0): string {
+export function shapeSignature(value: unknown, depth = 0): string {
   if (depth > 4) return "?";
   if (value === null || typeof value !== "object") return typeof value;
   if (Array.isArray(value)) return `[${value.length > 0 ? shapeSignature(value[0], depth + 1) : ""}]`;

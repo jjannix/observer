@@ -54,14 +54,18 @@ export function defaultSourceRoots(): {
   codexSessions: string;
   codexArchived: string;
   claudeCodeProjects: string;
+  opencodeData: string;
 } {
   const home = homedir();
   const claudeConfigDir = env("CLAUDE_CONFIG_DIR") ?? join(home, ".claude");
+  // OpenCode uses XDG-style paths on every platform (verified on Windows).
+  const xdgData = env("XDG_DATA_HOME");
   return {
     pi: process.env.PI_SESSIONS_ROOT ?? join(home, ".pi", "agent", "sessions"),
     codexSessions: process.env.CODEX_SESSIONS_ROOT ?? join(home, ".codex", "sessions"),
     codexArchived: process.env.CODEX_ARCHIVED_ROOT ?? join(home, ".codex", "archived_sessions"),
     claudeCodeProjects: process.env.CLAUDE_CODE_PROJECTS_ROOT ?? join(claudeConfigDir, "projects"),
+    opencodeData: env("OPENCODE_DATA_DIR") ?? (xdgData ? join(xdgData, "opencode") : join(home, ".local", "share", "opencode")),
   };
 }
 
