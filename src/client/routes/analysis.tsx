@@ -205,7 +205,7 @@ function aggregateLargestSessions(events: NormalizedUsageEvent[]): Array<{ id: s
 
 function formatDate(iso: string): string { return new Intl.DateTimeFormat("en", { month: "short", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }).format(new Date(iso)); }
 function providerLabel(value: string, providers: Array<{ id: string; display: string }> | undefined): string { return providers?.find((provider) => provider.id === value)?.display ?? value; }
-function harnessLabel(value: string): string { return ({ codex: "Codex", pi: "Pi", opencode: "OpenCode", "claude-code": "Claude Code" } as Record<string, string>)[value] ?? value; }
+function harnessLabel(value: string): string { return ({ codex: "Codex", pi: "Pi", opencode: "OpenCode", "claude-code": "Claude Code", cursor: "Cursor" } as Record<string, string>)[value] ?? value; }
 function shortId(value: string): string { const parts = value.replace(/\\/g, "/").split("/").filter(Boolean); return parts.at(-1) ?? value; }
 function projectLabel(projectId: string, projects: Array<{ id: string; path: string }> | undefined): string { const resolved = projects?.find((project) => project.id === projectId); return shortId(resolved?.path ?? projectId); }
 function Readout({ value, label, detail }: { value: string; label: string; detail: string }) { return <div className="readout"><div className="readout-value">{value}</div><div className="readout-label">{label}</div><div className="readout-detail">{detail}</div></div>; }

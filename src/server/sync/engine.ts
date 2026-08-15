@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import type { RawUsageEnvelope } from "@shared/contracts";
 import { getCollector } from "../collectors/index.js";
+import { containsForbiddenContent } from "../collectors/envelope.js";
 import type { CollectEmit, Collector } from "../collectors/contract.js";
 import type { ObserverConfig, SourceConfig } from "../config/schema.js";
 import { Repository } from "./repository.js";
@@ -318,6 +319,28 @@ export class SyncEngine {
     }
 
     const envelope = emit.usage.envelope;
+    // Runtime privacy guard: a collector bug or drifted source schema must
+    // never be able to persist prompts, emails, transcripts, or tool data.
+    // Violations are quarantined generically — the offending object is never
+    // stored, not even for inspection.
+    if (containsForbiddenContent(envelope)) {
+      const { inserted } = this.repo.insertRawRecord({
+        sourceId: source.id,
+        sourceFileId,
+        logicalSessionId: file.logicalSessionId,
+        lineOrdinal: envelope.lineOrdinal,
+        envelopeHash: `forbidden-content:${file.logicalSessionId}:${envelope.lineOrdinal}`,
+        parserVersion: collector.adapterVersion,
+        requestId: null,
+        occurredAt: new Date().toISOString(),
+        status: "quarantined",
+        envelopeJson: JSON.stringify({ reason: "forbidden-content-detected", partial: null }),
+        qualityFlagsJson: JSON.stringify(["quarantined"]),
+        createdAt: new Date().toISOString(),
+      });
+      return { imported: 0, duplicates: 0, quarantined: inserted ? 1 : 0 };
+    }
+
     const cutoff = config.historyCutoff;
     const withinCutoff = cutoff == null || envelope.occurredAt >= cutoff;
 

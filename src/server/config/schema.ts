@@ -9,7 +9,7 @@ import { defaultSourceRoots, resolvePaths } from "./paths.js";
 
 export const CONFIG_VERSION = 1;
 
-export const harnessIdSchema = z.enum(["pi", "codex", "opencode", "claude-code"]);
+export const harnessIdSchema = z.enum(["pi", "codex", "opencode", "claude-code", "cursor"]);
 
 export const sourceConfigSchema = z.object({
   id: z.string().min(1),
@@ -114,6 +114,7 @@ export function defaultConfig(): ObserverConfig {
       { id: "codex-archived", harness: "codex", label: "Codex (archived)", root: roots.codexArchived, enabled: true },
       { id: "claude-code-projects", harness: "claude-code", label: "Claude Code", root: roots.claudeCodeProjects, enabled: true },
       { id: "opencode-database", harness: "opencode", label: "OpenCode", root: roots.opencodeData, enabled: true },
+      { id: "cursor-spool", harness: "cursor", label: "Cursor", root: roots.cursorSpool, enabled: true },
     ],
     providerAliases: SEED_PROVIDER_ALIASES,
     providerOverrides: [],

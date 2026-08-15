@@ -30,18 +30,32 @@ function sortKeys(value: unknown): unknown {
  */
 const FORBIDDEN_KEYS = new Set([
   "prompt",
+  "prompts",
   "content",
   "text",
   "input",
   "output",
   "tool_input",
   "tool_output",
+  "tool_name",
+  "tool_result",
+  "tool_use",
   "function_call",
   "tool_calls",
   "messages",
   "body",
   "snippet",
   "code",
+  "email",
+  "user_email",
+  "transcript",
+  "transcript_path",
+  "attachment",
+  "attachments",
+  "thinking",
+  "reasoning_text",
+  "response",
+  "responses",
 ]);
 
 export function containsForbiddenContent(value: unknown, depth = 0): boolean {
