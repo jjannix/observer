@@ -79,6 +79,12 @@ export function modelOwner(rawModel: string | null): string | null {
   if (/^glm-\d/.test(family)) return "zai";
   // Moonshot's Kimi family (kimi-k2.6, kimi-k3, ...).
   if (/^kimi-k\d/.test(family)) return "moonshot";
+  if (/^gpt-\d/.test(family) || /^o\d/.test(family)) return "openai";
+  if (/^gemini-\d/.test(family)) return "google";
+  if (/^deepseek-/.test(family)) return "deepseek";
+  if (/^grok-\d/.test(family)) return "x-ai";
+  if (/^minimax-/.test(family)) return "minimax";
+  if (/^llama-\d/.test(family) || /^muse(-|_|$)/.test(family)) return "meta";
   return OWNER_BY_MODEL[family] ?? OWNER_BY_MODEL[cleaned] ?? null;
 }
 

@@ -115,8 +115,19 @@ describe("canonical model keys", () => {
     expect(canonicalizeModelId("claude-sonnet-4")).toBe("anthropic/claude-sonnet-4");
   });
 
-  it("modelOwner resolves known ids", () => {
+  it("modelOwner resolves known ids and model families", () => {
     expect(modelOwner("GPT-5")).toBe("openai");
+    expect(modelOwner("gpt-5.6-luna")).toBe("openai");
+    expect(modelOwner("o3-mini")).toBe("openai");
+    expect(modelOwner("gemini-3.7-flash")).toBe("google");
+    expect(modelOwner("gemini-3-flash-preview")).toBe("google");
+    expect(modelOwner("deepseek-chat")).toBe("deepseek");
+    expect(modelOwner("deepseek-v3")).toBe("deepseek");
+    expect(modelOwner("grok-4")).toBe("x-ai");
+    expect(modelOwner("llama-3.3-70b")).toBe("meta");
+    expect(modelOwner("muse-spark")).toBe("meta");
+    expect(modelOwner("muse")).toBe("meta");
+    expect(modelOwner("minimax-m3")).toBe("minimax");
     expect(modelOwner("unknown-model")).toBeNull();
   });
 
