@@ -59,6 +59,12 @@ export function registerApi(app: FastifyInstance, state: AppState): void {
     return analytics.modelsBreakdown(parseFilters(req.query as Record<string, unknown>));
   });
 
+  app.get("/api/v1/cache-attribution", async (req): Promise<unknown> => {
+    return analytics.cacheAttribution(
+      parseFilters(req.query as Record<string, unknown>),
+      state.getConfig().providerAliases,
+    );
+  });
 
   app.get("/api/v1/events", async (req) => {
     const q = req.query as Record<string, unknown>;

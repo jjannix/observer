@@ -148,13 +148,17 @@ Resolution precedence: **user-override → seed-alias → deterministic → unkn
 | GET | `/dimensions` | canonical providers/models/projects/harnesses for filters |
 | GET | `/timeseries` | daily Europe/Berlin buckets grouped by canonical provider |
 | GET | `/summary` | totals and weighted ratios |
+| GET | `/models-breakdown` | per-model in-range totals ranked by processed tokens |
+| GET | `/cache-attribution` | harness cache-read share, provider mix, and adjusted lift |
 | GET | `/events` | opaque-cursor pagination over normalized events |
 | GET | `/config` | sanitized configuration + resolved paths |
 | PUT | `/config` | validate + atomically persist |
 | POST | `/renormalize` | rebuild canonical rows from retained envelopes |
 | POST | `/rebuild` | requires `{"confirm":"rebuild"}`; clears index, rescans |
 
-`summary` and `events` accept `from`, exclusive `to`, and canonical `harness`/`provider`/`model`/`project` filters. Event page size defaults to 100 and is capped at 250.
+`summary` and `events` accept `from`, exclusive `to`, and canonical `harness`/`provider`/`model`/`project` filters. Event page size defaults to 100 and is capped at 250. Provider grouping and filters resolve stored canonical ids through the current alias rules at read time, so rows written by older builds never split a provider family.
+
+> **Do not run old builds against the same data directory.** Canonicalization rules evolve; a stale writer stores outdated canonical provider/model ids alongside current ones. If it happens anyway, `POST /renormalize` replays all retained envelopes through the current rules and repairs the split.
 
 ## Privacy
 

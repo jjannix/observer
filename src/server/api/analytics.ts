@@ -2,6 +2,7 @@ import type { RawDatabase } from "../db/index.js";
 import { formatInTimeZone } from "date-fns-tz";
 import {
   type AppliedFilters,
+  type CacheAttributionResponse,
   type DimensionLists,
   type EventsPage,
   type ModelBreakdownItem,
@@ -31,6 +32,10 @@ export type TimeseriesMetric =
   | "costUsd"
   | "requests";
 export type TimeseriesGroupBy = "provider" | "harness";
+
+const MIN_COMPARABLE_PROVIDER_INPUT_TOKENS = 1_000_000;
+const MIN_COMPARABLE_PROVIDER_SHARE = 0.05;
+const MAX_COMPARABLE_INPUT_RATIO = 20;
 
 export interface TimeseriesPoint {
   date: string; // Berlin calendar day "yyyy-MM-dd"
@@ -228,6 +233,132 @@ export class Analytics {
         total: row.total ?? 0,
       },
     };
+  }
+
+  cacheAttribution(filters: RangeFilters, providerAliases: Array<{ raw: string; display: string }> = []): CacheAttributionResponse {
+    const displayFor = providerDisplayNameFactory(this.db, providerAliases);
+    const attributionFilters = filters.provider?.length ? { ...filters, provider: undefined } : filters;
+    const { sql, params } = buildWhere(this.db, attributionFilters);
+    const rawRows = this.db
+      .prepare(
+        `SELECT e.harness AS harness,
+                COALESCE(e.canonical_provider_id, 'unknown') AS providerId,
+                COALESCE(SUM(e.processed_input_tokens), 0) AS processedInputTokens,
+                COALESCE(SUM(e.cache_read_input_tokens), 0) AS cacheReadInputTokens
+         FROM usage_events e ${sql}
+         GROUP BY e.harness, COALESCE(e.canonical_provider_id, 'unknown')
+         HAVING SUM(e.processed_input_tokens) > 0`,
+      )
+      .all(...params) as Array<{
+        harness: string;
+        providerId: string;
+        processedInputTokens: number;
+        cacheReadInputTokens: number;
+      }>;
+    const selectedProviders = filters.provider?.length
+      ? new Set(filters.provider.map((provider) => canonicalizeProviderId(provider) ?? provider))
+      : null;
+    const cellMap = new Map<string, (typeof rawRows)[number]>();
+    for (const rawRow of rawRows) {
+      const providerId = rawRow.providerId === "unknown"
+        ? "unknown"
+        : canonicalizeProviderId(rawRow.providerId) ?? rawRow.providerId;
+      if (selectedProviders && !selectedProviders.has(providerId)) continue;
+      const key = `${rawRow.harness}|${providerId}`;
+      const cell = cellMap.get(key) ?? {
+        harness: rawRow.harness,
+        providerId,
+        processedInputTokens: 0,
+        cacheReadInputTokens: 0,
+      };
+      cell.processedInputTokens += rawRow.processedInputTokens;
+      cell.cacheReadInputTokens += rawRow.cacheReadInputTokens;
+      cellMap.set(key, cell);
+    }
+    const rows = [...cellMap.values()];
+
+    const providerCells = new Map<string, typeof rows>();
+    const harnessCells = new Map<string, typeof rows>();
+    for (const row of rows) {
+      providerCells.set(row.providerId, [...(providerCells.get(row.providerId) ?? []), row]);
+      harnessCells.set(row.harness, [...(harnessCells.get(row.harness) ?? []), row]);
+    }
+
+    const harnesses = [...harnessCells.entries()].map(([harness, cells]) => {
+      const processedInputTokens = cells.reduce((sum, cell) => sum + cell.processedInputTokens, 0);
+      const cacheReadInputTokens = cells.reduce((sum, cell) => sum + cell.cacheReadInputTokens, 0);
+      const providers = cells
+        .map((cell) => {
+          const inputShare = processedInputTokens > 0 ? cell.processedInputTokens / processedInputTokens : null;
+          const observedRate = cell.processedInputTokens > 0
+            ? cell.cacheReadInputTokens / cell.processedInputTokens
+            : null;
+          const cellsForProvider = providerCells.get(cell.providerId) ?? [];
+          const qualifiedPeers = cellsForProvider.filter((peer) => {
+            if (peer.harness === harness) return false;
+            if (cell.providerId === "unknown") return false;
+            if (cell.processedInputTokens < MIN_COMPARABLE_PROVIDER_INPUT_TOKENS) return false;
+            if (peer.processedInputTokens < MIN_COMPARABLE_PROVIDER_INPUT_TOKENS) return false;
+            const ratio = Math.max(cell.processedInputTokens, peer.processedInputTokens)
+              / Math.min(cell.processedInputTokens, peer.processedInputTokens);
+            return ratio <= MAX_COMPARABLE_INPUT_RATIO;
+          });
+          const comparatorInputTokens = qualifiedPeers.reduce((sum, peer) => sum + peer.processedInputTokens, 0);
+          const comparatorCacheRead = qualifiedPeers.reduce((sum, peer) => sum + peer.cacheReadInputTokens, 0);
+          let comparisonNote: string | null = null;
+          if (cell.providerId === "unknown") {
+            comparisonNote = "provider is unknown";
+          } else if (inputShare == null || inputShare < MIN_COMPARABLE_PROVIDER_SHARE) {
+            comparisonNote = "below 5% of harness input";
+          } else if (cell.processedInputTokens < MIN_COMPARABLE_PROVIDER_INPUT_TOKENS) {
+            comparisonNote = "less than 1M input tokens";
+          } else if (qualifiedPeers.length === 0) {
+            comparisonNote = "no peer with at least 1M input and a 20×-balanced sample";
+          }
+          const otherHarnessRate = comparisonNote == null && comparatorInputTokens > 0
+            ? comparatorCacheRead / comparatorInputTokens
+            : null;
+          return {
+            providerId: cell.providerId,
+            display: displayFor(cell.providerId),
+            processedInputTokens: cell.processedInputTokens,
+            cacheReadInputTokens: cell.cacheReadInputTokens,
+            observedRate,
+            inputShare,
+            otherHarnessRate,
+            comparatorInputTokens,
+            comparisonNote,
+            lift: observedRate != null && otherHarnessRate != null ? observedRate - otherHarnessRate : null,
+          };
+        })
+        .sort((a, b) => b.processedInputTokens - a.processedInputTokens);
+
+      const comparable = providers.filter((provider) => provider.otherHarnessRate != null);
+      const comparableInput = comparable.reduce((sum, provider) => sum + provider.processedInputTokens, 0);
+      const comparableCacheRead = comparable.reduce((sum, provider) => sum + provider.cacheReadInputTokens, 0);
+      const expectedCacheRead = comparable.reduce(
+        (sum, provider) => sum + provider.processedInputTokens * provider.otherHarnessRate!,
+        0,
+      );
+      const comparableObservedRate = comparableInput > 0 ? comparableCacheRead / comparableInput : null;
+      const providerExpectedRate = comparableInput > 0 ? expectedCacheRead / comparableInput : null;
+
+      return {
+        harness: harness as CacheAttributionResponse["harnesses"][number]["harness"],
+        processedInputTokens,
+        cacheReadInputTokens,
+        observedRate: processedInputTokens > 0 ? cacheReadInputTokens / processedInputTokens : null,
+        comparableObservedRate,
+        providerExpectedRate,
+        adjustedLift: comparableObservedRate != null && providerExpectedRate != null
+          ? comparableObservedRate - providerExpectedRate
+          : null,
+        comparisonCoverage: processedInputTokens > 0 ? comparableInput / processedInputTokens : null,
+        providers,
+      };
+    }).sort((a, b) => b.processedInputTokens - a.processedInputTokens);
+
+    return { filters, harnesses };
   }
 
   events(filters: RangeFilters, cursor: string | null, pageSize: number): EventsPage {

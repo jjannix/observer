@@ -81,13 +81,19 @@ test.describe("Observer UI", () => {
 
     const harnessMetrics = page.locator(".harness-metric-matrix");
     await expect(harnessMetrics).toBeVisible();
-    await expect(harnessMetrics.getByText("Processed tokens", { exact: true })).toBeVisible();
-    await expect(harnessMetrics.getByText("Cache hit rate", { exact: true })).toBeVisible();
+    await expect(harnessMetrics.getByRole("rowheader", { name: /Processed tokens/ })).toBeVisible();
+    await expect(harnessMetrics.getByRole("rowheader", { name: /Observed cache-read share/ })).toBeVisible();
+    await expect(harnessMetrics.getByRole("rowheader", { name: /Provider-adjusted lift/ })).toBeVisible();
+    const metricHelp = harnessMetrics.getByRole("button", { name: "Explain metric" }).first();
+    await metricHelp.hover();
+    await expect(metricHelp.locator("xpath=following-sibling::*[@role='tooltip']")).toBeVisible();
     const leadingCell = harnessMetrics.locator("td.is-best").first();
     await expect(leadingCell).toBeVisible();
     await leadingCell.hover();
     await expect(leadingCell).toHaveClass(/is-active-column/);
     await expect(page.getByText("Comparison metrics", { exact: true })).toBeVisible();
+    await expect(page.getByText("Cache attribution", { exact: true })).toBeVisible();
+    await expect(page.locator(".cache-provider-table")).toBeVisible();
   });
 
   test("settings route shows config file location and actions", async ({ page }) => {

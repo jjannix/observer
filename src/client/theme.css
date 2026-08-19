@@ -507,6 +507,12 @@ table.data tbody tr { transition: background-color var(--duration) ease; }
 .series-dot.series-2 { background: #737373; }
 .series-dot.series-3 { background: #454545; }
 .harness-metric-matrix tbody th { width: 164px; height: 52px; padding: 8px 16px 8px 0; color: var(--fg-1); font-size: 10px; font-weight: 400; }
+.metric-name { display: inline-flex; align-items: center; gap: 6px; }
+.metric-help { position: relative; display: inline-flex; align-items: center; }
+.metric-help > button { width: 15px; height: 15px; padding: 0; display: inline-grid; place-items: center; color: var(--fg-2); background: transparent; border: 1px solid var(--border-strong); border-radius: 50%; font: 500 9px/1 var(--font-sans); }
+.metric-help > button:hover, .metric-help > button:focus-visible { color: var(--fg-0); background: var(--bg-2); border-color: #4a4a4a; }
+.metric-help-tip { position: absolute; z-index: 8; left: 20px; top: 50%; width: max-content; max-width: min(260px, calc(100vw - 48px)); padding: 8px 9px; visibility: hidden; color: var(--fg-1) !important; background: var(--panel-raised); border: 1px solid var(--border-strong); border-radius: 5px; box-shadow: 0 10px 28px rgb(0 0 0 / 45%); font: 10px/1.45 var(--font-sans) !important; opacity: 0; pointer-events: none; text-align: left; white-space: normal; transform: translateY(-50%) translateX(-3px); transition: opacity 120ms ease, transform 120ms var(--ease-out), visibility 120ms; }
+.metric-help:hover .metric-help-tip, .metric-help:focus-within .metric-help-tip { visibility: visible; opacity: 1; transform: translateY(-50%) translateX(0); }
 .harness-metric-matrix tbody td { height: 52px; padding: 8px 16px; font-variant-numeric: tabular-nums; }
 .harness-metric-matrix tbody td strong, .harness-metric-matrix tbody td small { display: block; }
 .harness-metric-matrix tbody td strong { color: var(--fg-0); font-size: 14px; font-weight: 500; letter-spacing: -.015em; }
@@ -517,6 +523,44 @@ table.data tbody tr { transition: background-color var(--duration) ease; }
 .harness-metrics-head { margin: 48px 0 12px; padding-top: 28px; display: flex; align-items: baseline; justify-content: space-between; gap: 20px; border-top: 1px solid var(--border); }
 .harness-metrics-head h3 { color: var(--fg-0); font-size: 11px; font-weight: 500; }
 .harness-metrics-head span { color: var(--fg-2); font-size: 10px; }
+
+.cache-attribution { margin-top: 52px; padding-top: 28px; border-top: 1px solid var(--border); }
+.cache-attribution-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; }
+.cache-attribution-head > div:first-child { display: flex; flex-direction: column; gap: 2px; }
+.cache-attribution-head h3 { color: var(--fg-0); font-size: 11px; font-weight: 500; }
+.cache-attribution-head > div:first-child span { color: var(--fg-2); font-size: 10px; }
+.cache-harness-tabs { display: flex; align-items: center; flex-wrap: wrap; gap: 3px; }
+.cache-harness-tabs button { min-height: 28px; padding: 0 8px; display: inline-flex; align-items: center; gap: 6px; color: var(--fg-2); background: transparent; border-color: transparent; font-size: 10px; }
+.cache-harness-tabs button:hover { color: var(--fg-0); border-color: transparent; background: rgb(255 255 255 / 2%); }
+.cache-harness-tabs button.active { color: var(--fg-0); background: var(--bg-2); border-color: var(--border); }
+.cache-harness-tabs button i { width: 6px; height: 6px; border-radius: 2px; }
+.cache-attribution-readings { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); margin-top: 24px; padding: 20px 0; border-top: 1px solid var(--border-faint); border-bottom: 1px solid var(--border-faint); }
+.cache-attribution-readings > div { min-height: 54px; padding: 0 22px; display: flex; flex-direction: column; justify-content: center; gap: 5px; border-left: 1px solid var(--border); }
+.cache-attribution-readings > div:first-child { padding-left: 0; border-left: 0; }
+.cache-attribution-readings strong { color: var(--fg-0); font-size: 22px; font-weight: 500; line-height: 1; letter-spacing: -.025em; font-variant-numeric: tabular-nums; }
+.cache-attribution-readings span { color: var(--fg-2); font-size: 9px; }
+.cache-attribution-readings > div > span { display: flex; align-items: center; gap: 6px; }
+.cache-attribution-readings > div:nth-child(n+4) .metric-help-tip { right: 20px; left: auto; }
+.cache-attribution-readings .muted strong { color: var(--fg-2); }
+.cache-attribution-note { max-width: 78ch; margin-top: 14px; color: var(--fg-2); font-size: 10px; line-height: 1.5; text-wrap: pretty; }
+.cache-provider-table { width: 100%; margin-top: 18px; border-collapse: collapse; table-layout: fixed; }
+.cache-provider-table th { height: 34px; padding: 0 12px; color: var(--fg-2); border-bottom: 1px solid var(--border); font-size: 9px; font-weight: 500; text-align: left; white-space: nowrap; }
+.cache-provider-table td { height: 58px; padding: 8px 12px; color: var(--fg-1); border-bottom: 1px solid var(--border-faint); font-size: 11px; white-space: nowrap; }
+.cache-provider-table th:first-child, .cache-provider-table td:first-child { width: 25%; padding-left: 0; }
+.cache-provider-table th:nth-child(2), .cache-provider-table td:nth-child(2) { width: 27%; }
+.cache-provider-table th:nth-child(n+3), .cache-provider-table td:nth-child(n+3) { text-align: right; }
+.cache-provider-table td:first-child strong, .cache-provider-table td:first-child small { display: block; }
+.cache-provider-table td:first-child strong { overflow: hidden; color: var(--fg-0); font-size: 11px; font-weight: 500; text-overflow: ellipsis; }
+.cache-provider-table td:first-child small { margin-top: 2px; color: var(--fg-2); font-size: 9px; }
+.cache-provider-table td.positive { color: var(--accent); }
+.cache-provider-table .cache-peer-cell span, .cache-provider-table .cache-peer-cell small { display: block; }
+.cache-provider-table .cache-peer-cell small { margin-top: 2px; overflow: hidden; color: var(--fg-2); font-size: 9px; text-overflow: ellipsis; }
+.cache-mix { display: flex; align-items: center; gap: 9px; }
+.cache-mix > span { height: 3px; display: block; flex: 1; overflow: hidden; background: var(--border); }
+.cache-mix > span i { height: 100%; display: block; min-width: 1px; }
+.cache-mix small { min-width: 36px; color: var(--fg-2); font-size: 9px; text-align: right; }
+.cache-attribution-empty { min-height: 160px; margin-top: 40px; border-top: 1px solid var(--border); }
+.cache-attribution-skeleton { height: 280px; margin-top: 52px; }
 
 .surface { background: transparent; border-top: 1px solid var(--border); border-radius: 0; box-shadow: none; }
 .surface.pad { padding: 28px 4px; }
@@ -663,6 +707,7 @@ table.data tbody tr { transition: background-color var(--duration) ease; }
   .dimension-sidebar-toggle { top: 0; right: 0; box-shadow: none; }
   .dimension-breakdown { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 28px; padding-top: 4px; }
   .dimension-row + .dimension-row { padding-top: 0; border-top: 0; }
+  .cache-attribution-head { align-items: flex-start; flex-direction: column; }
 }
 
 @media (max-width: 640px) {
@@ -693,6 +738,15 @@ table.data tbody tr { transition: background-color var(--duration) ease; }
   .chart-controls .metric-select-trigger { flex: 1; }
   .harness-metric-matrix thead th:first-child, .harness-metric-matrix tbody th { position: sticky; left: 0; z-index: 1; background: var(--bg-0); }
   .harness-metrics-head { align-items: flex-start; flex-direction: column; gap: 2px; margin-top: 36px; }
+  .cache-attribution { margin-top: 40px; }
+  .cache-harness-tabs { width: 100%; }
+  .cache-attribution-readings { grid-template-columns: 1fr 1fr; }
+  .cache-attribution-readings > div { min-height: 64px; padding: 10px 16px; }
+  .cache-attribution-readings > div:nth-child(3), .cache-attribution-readings > div:nth-child(5) { padding-left: 0; border-top: 1px solid var(--border); border-left: 0; }
+  .cache-attribution-readings > div:nth-child(4) { border-top: 1px solid var(--border); }
+  .cache-attribution-readings > div:nth-child(even) .metric-help-tip { right: 20px; left: auto; }
+  .cache-attribution-readings > div:nth-child(odd) .metric-help-tip { right: auto; left: 20px; }
+  .cache-provider-table { min-width: 680px; }
   .analysis-efficiency { padding: 24px 2px 30px; }
   .surface.pad { padding: 24px 2px; }
   .comp-legend { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }

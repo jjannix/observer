@@ -19,9 +19,11 @@ async function jsonFetch<T>(url: string, init?: RequestInit): Promise<T> {
 }
 
 import type {
+  CacheAttributionResponse,
   DimensionLists,
   EventsPage,
   HealthResponse,
+  ModelsBreakdownResponse,
   SanitizedConfig,
   SourceInfo,
   SummaryResponse,
@@ -46,12 +48,12 @@ export const api = {
   dimensions: () => jsonFetch<DimensionLists>("/api/v1/dimensions"),
   timeseries: (filters: RangeFilters, metric: string, groupBy: "provider" | "harness" = "provider") =>
     jsonFetch<TimeseriesResponse>(`/api/v1/timeseries?${qs({ ...filters, metric, groupBy } as Record<string, unknown>)}`),
-  modelsBreakdown: (filters: RangeFilters) =>
-    jsonFetch<ModelsBreakdownResponse>(`/api/v1/models-breakdown?${qs(filters as Record<string, unknown>)}`),
-  modelsBreakdown: (filters: RangeFilters) =>
-    jsonFetch<ModelsBreakdownResponse>(`/api/v1/models-breakdown?${qs(filters as Record<string, unknown>)}`),
   summary: (filters: RangeFilters) =>
     jsonFetch<SummaryResponse>(`/api/v1/summary?${qs(filters as Record<string, unknown>)}`),
+  modelsBreakdown: (filters: RangeFilters) =>
+    jsonFetch<ModelsBreakdownResponse>(`/api/v1/models-breakdown?${qs(filters as Record<string, unknown>)}`),
+  cacheAttribution: (filters: RangeFilters) =>
+    jsonFetch<CacheAttributionResponse>(`/api/v1/cache-attribution?${qs(filters as Record<string, unknown>)}`),
   events: (filters: RangeFilters, cursor: string | null, pageSize: number) =>
     jsonFetch<EventsPage>(`/api/v1/events?${qs({ ...filters, cursor, pageSize } as Record<string, unknown>)}`),
   config: () => jsonFetch<SanitizedConfig>("/api/v1/config"),
