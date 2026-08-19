@@ -76,6 +76,17 @@ export function defaultSourceRoots(): {
 }
 
 /**
+ * Cursor's per-user directory (VSCode-style layout: globalStorage and
+ * workspaceStorage live inside it). %APPDATA% on Windows, Application
+ * Support on macOS, XDG config on Linux.
+ */
+export function cursorUserDir(): string {
+  if (isWindows) return join(env("APPDATA") ?? join(homedir(), "AppData", "Roaming"), "Cursor", "User");
+  if (platform() === "darwin") return join(homedir(), "Library", "Application Support", "Cursor", "User");
+  return join(env("XDG_CONFIG_HOME") ?? join(homedir(), ".config"), "Cursor", "User");
+}
+
+/**
  * Normalize a filesystem path case-insensitively on Windows/macOS and resolve
  * it to an absolute form. Trailing separators are stripped.
  */

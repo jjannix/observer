@@ -2,6 +2,7 @@ import Database from "better-sqlite3";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { cursorUserDir } from "../../config/paths.js";
 import { CURSOR_EVENT_SCHEMA, safeCursorToken, type CursorUsageEventV1 } from "./event.js";
 
 // Legacy-only backfill. Cursor 3.16.17 stores no usable accounting for new
@@ -19,9 +20,9 @@ const BUBBLE_KEY_END = "bubbleId;";
 const SCAN_WINDOW = 500;
 
 export interface BackfillArgs {
-  /** %APPDATA%\Cursor\User\globalStorage\state.vscdb */
+  /** <cursorUserDir>/globalStorage/state.vscdb */
   globalDbPath: string;
-  /** %APPDATA%\Cursor\User\workspaceStorage */
+  /** <cursorUserDir>/workspaceStorage */
   workspaceStorageDir: string;
   /** Observer spool root (…/cursor/spool). */
   spoolRoot: string;
@@ -435,8 +436,7 @@ export function runLegacyBackfill(args: BackfillArgs): BackfillSummary {
 }
 
 export function defaultBackfillArgs(spoolRoot: string): BackfillArgs {
-  const appData = process.env.APPDATA ?? "";
-  const userDir = join(appData, "Cursor", "User");
+  const userDir = cursorUserDir();
   return {
     globalDbPath: join(userDir, "globalStorage", "state.vscdb"),
     workspaceStorageDir: join(userDir, "workspaceStorage"),
