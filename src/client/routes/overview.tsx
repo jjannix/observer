@@ -1,9 +1,10 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { useQueries, useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import { api, rangeToFilters } from "../api.js";
 import { CHART_METRICS, FiltersBar, useFilterState, type FilterState } from "../components/Filters.js";
-import { SignalChart } from "../components/Chart.js";
+import { MultiLineChart, SignalChart } from "../components/Chart.js";
+import { colorForHarness } from "../components/colors.js";
 import { MetricSelect } from "../components/MetricSelect.js";
 import { CompositionBar, COLORS, fmtCompact, fmtCompactPrecise, fmtInt, fmtPct, fmtUsd } from "../components/ui.js";
 
@@ -19,6 +20,7 @@ const METRIC_FORMATTER: Record<string, (value: number) => string> = {
 
 export function Overview() {
   const [filters, setFilters] = useFilterState();
+  const [chartGrouping, setChartGrouping] = useState<"total" | "harness">("total");
 
   const range = useMemo(() => {
     const { from, to } = rangeToFilters(filters.range, "Europe/Berlin");
@@ -54,8 +56,8 @@ export function Overview() {
     enabled: Boolean(previousRange),
   });
   const { data: timeseries } = useQuery({
-    queryKey: ["timeseries", range, chartMetric],
-    queryFn: () => api.timeseries(range, chartMetric),
+    queryKey: ["timeseries", "overview", chartGrouping, range, chartMetric],
+    queryFn: () => api.timeseries(range, chartMetric, chartGrouping === "harness" ? "harness" : "provider"),
   });
   const modelCandidates = (dims?.models ?? []).slice(0, 12);
   const modelSummaries = useQueries({
@@ -73,6 +75,11 @@ export function Overview() {
     .map((model, index) => ({ model, totals: modelSummaries[index]?.data?.totals }))
     .filter(({ totals: row }) => row == null || row.processedTokens > 0)
     .slice(0, 5);
+  const harnessChart = useMemo(() => chartGrouping === "harness" && timeseries ? {
+    buckets: timeseries.buckets,
+    providers: timeseries.providers.map(harnessLabel),
+    points: timeseries.points.map((point) => ({ ...point, provider: harnessLabel(point.provider) })),
+  } : null, [chartGrouping, timeseries]);
 
   return (
     <div className="overview-page">
@@ -104,15 +111,32 @@ export function Overview() {
         <div className="section-head">
           <div>
             <h2>Usage over time</h2>
-            <span className="hint">Daily observations · {rangeLabel(filters.range)}</span>
+            <span className="hint">{chartGrouping === "harness" ? "Daily harness comparison" : "Daily observations"} · {rangeLabel(filters.range)}</span>
           </div>
-          <MetricSelect
-            value={chartMetric}
-            options={CHART_METRICS}
-            onChange={(value) => setFilters({ ...filters, chartMetric: value })}
-          />
+          <div className="chart-controls">
+            <div className="chart-group-toggle" role="group" aria-label="Chart grouping">
+              <button type="button" className={chartGrouping === "total" ? "active" : ""} aria-pressed={chartGrouping === "total"} onClick={() => setChartGrouping("total")}>Total</button>
+              <button type="button" className={chartGrouping === "harness" ? "active" : ""} aria-pressed={chartGrouping === "harness"} onClick={() => setChartGrouping("harness")}>Harnesses</button>
+            </div>
+            <MetricSelect
+              value={chartMetric}
+              options={CHART_METRICS}
+              onChange={(value) => setFilters({ ...filters, chartMetric: value })}
+            />
+          </div>
         </div>
-        {timeseries ? (
+        {chartGrouping === "harness" && harnessChart ? (
+          <MultiLineChart
+            buckets={harnessChart.buckets}
+            providers={harnessChart.providers}
+            points={harnessChart.points}
+            formatValue={METRIC_FORMATTER[chartMetric] ?? fmtCompact}
+            height={410}
+            ariaLabel="Harness usage comparison over time"
+            seriesColor={colorForHarness}
+            fillAreas
+          />
+        ) : timeseries ? (
           <SignalChart
             buckets={timeseries.buckets}
             providers={timeseries.providers}
@@ -169,6 +193,10 @@ export function Overview() {
 
 function Readout({ label, value }: { label: string; value: string }) {
   return <div className="readout"><div className="readout-value">{value}</div><div className="readout-label">{label}</div></div>;
+}
+
+function harnessLabel(value: string): string {
+  return ({ codex: "Codex", pi: "Pi", opencode: "OpenCode", "claude-code": "Claude Code" } as Record<string, string>)[value] ?? value;
 }
 
 function rangeLabel(range: FilterState["range"]): string {
