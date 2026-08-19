@@ -26,6 +26,7 @@ export const HARNESS_COLORS = {
   codex: "#60A5FA",
   opencode: "#F2F2F2",
   "claude-code": "#D97757",
+  cursor: "#00A3FF",
 } as const;
 
 export function colorForHarness(harness: string): string {
@@ -34,6 +35,7 @@ export function colorForHarness(harness: string): string {
   if (normalized === "codex") return HARNESS_COLORS.codex;
   if (normalized === "opencode" || normalized === "open code") return HARNESS_COLORS.opencode;
   if (normalized === "claude-code" || normalized === "claude code") return HARNESS_COLORS["claude-code"];
+  if (normalized === "cursor") return HARNESS_COLORS.cursor;
   return "#A2A2A2";
 }
 

@@ -196,7 +196,7 @@ function Readout({ label, value }: { label: string; value: string }) {
 }
 
 function harnessLabel(value: string): string {
-  return ({ codex: "Codex", pi: "Pi", opencode: "OpenCode", "claude-code": "Claude Code" } as Record<string, string>)[value] ?? value;
+  return ({ codex: "Codex", pi: "Pi", opencode: "OpenCode", "claude-code": "Claude Code", cursor: "Cursor" } as Record<string, string>)[value] ?? value;
 }
 
 function rangeLabel(range: FilterState["range"]): string {
