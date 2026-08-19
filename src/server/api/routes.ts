@@ -55,6 +55,11 @@ export function registerApi(app: FastifyInstance, state: AppState): void {
     return analytics.summary(parseFilters(req.query as Record<string, unknown>));
   });
 
+  app.get("/api/v1/models-breakdown", async (req): Promise<unknown> => {
+    return analytics.modelsBreakdown(parseFilters(req.query as Record<string, unknown>));
+  });
+
+
   app.get("/api/v1/events", async (req) => {
     const q = req.query as Record<string, unknown>;
     const filters = parseFilters(q);

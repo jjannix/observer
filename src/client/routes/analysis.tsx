@@ -52,13 +52,9 @@ export function Analysis() {
       staleTime: 10_000,
     })),
   });
-  const modelCandidates = (dims?.models ?? []).slice(0, 16);
-  const modelSummaries = useQueries({
-    queries: modelCandidates.map((model) => ({
-      queryKey: ["summary", "analysis-model", model.id, range],
-      queryFn: () => api.summary({ ...range, model: [model.id] }),
-      staleTime: 10_000,
-    })),
+  const { data: modelsBreakdown } = useQuery({
+    queryKey: ["models-breakdown", range],
+    queryFn: () => api.modelsBreakdown(range),
   });
 
   const totals = summary?.totals;
@@ -87,11 +83,7 @@ export function Analysis() {
     providers: harnessTimeseries.providers.map(harnessLabel),
     points: harnessTimeseries.points.map((point) => ({ ...point, provider: harnessLabel(point.provider) })),
   } : null, [harnessTimeseries]);
-  const modelRows = modelCandidates
-    .map((model, index) => ({ model, totals: modelSummaries[index]?.data?.totals }))
-    .filter(({ totals: row }) => row == null || row.processedTokens > 0)
-    .sort((a, b) => (b.totals?.processedTokens ?? 0) - (a.totals?.processedTokens ?? 0))
-    .slice(0, 8);
+  const modelRows = (modelsBreakdown?.models ?? []).slice(0, 8);
 
   return (
     <div className="analysis-page">
@@ -158,15 +150,15 @@ export function Analysis() {
         <div className="table-scroll"><table className="data instrument-table analysis-models">
           <thead><tr><th>Model</th><th>Processed</th><th>Uncached input</th><th>Cached input</th><th>Output</th><th>Cache</th><th>Cost</th></tr></thead>
           <tbody>
-            {modelRows.map(({ model, totals: row }) => {
+            {modelRows.map((model) => {
               return <tr key={model.id}>
                 <td><span className="model-id">{model.display}</span></td>
-                <td className="tnum">{fmtCompactPrecise(row?.processedTokens)}</td>
-                <td className="tnum">{fmtCompactPrecise(row?.freshInputTokens)}</td>
-                <td className="tnum">{fmtCompactPrecise(row?.cacheReadInputTokens)}</td>
-                <td className="tnum">{fmtCompactPrecise(row?.outputTokens)}</td>
-                <td className="tnum">{fmtPct(row?.cacheHitRate)}</td>
-                <td className="tnum">{fmtUsd(row?.costUsd)}</td>
+                <td className="tnum">{fmtCompactPrecise(model.processedTokens)}</td>
+                <td className="tnum">{fmtCompactPrecise(model.freshInputTokens)}</td>
+                <td className="tnum">{fmtCompactPrecise(model.cacheReadInputTokens)}</td>
+                <td className="tnum">{fmtCompactPrecise(model.outputTokens)}</td>
+                <td className="tnum">{fmtPct(model.cacheHitRate)}</td>
+                <td className="tnum">{fmtUsd(model.costUsd)}</td>
               </tr>;
             })}
             {modelRows.length === 0 && <tr><td colSpan={7} className="empty">No model observations in this period.</td></tr>}

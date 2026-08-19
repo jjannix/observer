@@ -209,4 +209,142 @@ describe("HTTP API", () => {
     expect(summary.totals.requests).toBe(3);
     expect(summary.totals.processedTokens).toBe(600);
   });
+
+  it("models-breakdown returns range-filtered models ranked by token volume", async () => {
+    const insert = state.raw.prepare(
+      `INSERT INTO usage_events
+       (id, harness, occurred_at, logical_session_id, request_id, raw_model_id, canonical_model_id,
+        processed_input_tokens, fresh_input_tokens, cache_read_input_tokens, output_tokens, processed_tokens)
+       VALUES (?, 'pi', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    );
+
+    const insertModel = state.raw.prepare(
+      `INSERT OR IGNORE INTO models (id, canonical_model_id, raw_model_id, owner, display) VALUES (?, ?, ?, ?, ?)`,
+    );
+
+    // Insert 20 models with 5 events each, 100 tokens per event (500 tokens total per model)
+    for (let m = 1; m <= 20; m++) {
+      insertModel.run(`test/model-${m}`, `test/model-${m}`, `model-${m}`, "test", `Model ${m}`);
+      for (let e = 1; e <= 5; e++) {
+        insert.run(
+          `m${m}_e${e}`,
+          `2025-01-0${e}T00:00:00Z`,
+          `s_${m}`,
+          `r_${m}_${e}`,
+          `model-${m}`,
+          `test/model-${m}`,
+          90,
+          90,
+          0,
+          10,
+          100,
+        );
+      }
+    }
+
+    // Insert 1 model with only 1 event, but 1,000,000 tokens
+    insertModel.run("google/gemini-3.7-flash", "google/gemini-3.7-flash", "gemini-3.7-flash", "google", "Gemini 3.7 Flash");
+    insert.run(
+      "gemini_e1",
+      "2025-01-01T00:00:00Z",
+      "s_gemini",
+      "r_gemini_1",
+      "gemini-3.7-flash",
+      "google/gemini-3.7-flash",
+      800_000,
+      200_000,
+      600_000,
+      200_000,
+      1_000_000,
+    );
+
+    const res = await app.inject({ method: "GET", url: "/api/v1/models-breakdown" });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.models.length).toBe(21);
+    // Gemini Flash ranks #1 despite having only 1 event
+    expect(body.models[0]).toMatchObject({
+      id: "google/gemini-3.7-flash",
+      canonicalModelId: "google/gemini-3.7-flash",
+      processedTokens: 1_000_000,
+      cacheReadInputTokens: 600_000,
+      freshInputTokens: 200_000,
+      outputTokens: 200_000,
+    });
+    expect(body.models[0].cacheHitRate).toBeCloseTo(600_000 / 800_000);
+
+    // Dimensions models also ordered by volume
+    const dimsRes = await app.inject({ method: "GET", url: "/api/v1/dimensions" });
+    const dims = dimsRes.json();
+    expect(dims.models[0].id).toBe("google/gemini-3.7-flash");
+  });
+
+  it("models-breakdown returns range-filtered models ranked by token volume", async () => {
+    const insert = state.raw.prepare(
+      `INSERT INTO usage_events
+       (id, harness, occurred_at, logical_session_id, request_id, raw_model_id, canonical_model_id,
+        processed_input_tokens, fresh_input_tokens, cache_read_input_tokens, output_tokens, processed_tokens)
+       VALUES (?, 'pi', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    );
+
+    const insertModel = state.raw.prepare(
+      `INSERT OR IGNORE INTO models (id, canonical_model_id, raw_model_id, owner, display) VALUES (?, ?, ?, ?, ?)`,
+    );
+
+    // Insert 20 models with 5 events each, 100 tokens per event (500 tokens total per model)
+    for (let m = 1; m <= 20; m++) {
+      insertModel.run(`test/model-${m}`, `test/model-${m}`, `model-${m}`, "test", `Model ${m}`);
+      for (let e = 1; e <= 5; e++) {
+        insert.run(
+          `m${m}_e${e}`,
+          `2025-01-0${e}T00:00:00Z`,
+          `s_${m}`,
+          `r_${m}_${e}`,
+          `model-${m}`,
+          `test/model-${m}`,
+          90,
+          90,
+          0,
+          10,
+          100,
+        );
+      }
+    }
+
+    // Insert 1 model with only 1 event, but 1,000,000 tokens
+    insertModel.run("google/gemini-3.7-flash", "google/gemini-3.7-flash", "gemini-3.7-flash", "google", "Gemini 3.7 Flash");
+    insert.run(
+      "gemini_e1",
+      "2025-01-01T00:00:00Z",
+      "s_gemini",
+      "r_gemini_1",
+      "gemini-3.7-flash",
+      "google/gemini-3.7-flash",
+      800_000,
+      200_000,
+      600_000,
+      200_000,
+      1_000_000,
+    );
+
+    const res = await app.inject({ method: "GET", url: "/api/v1/models-breakdown" });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.models.length).toBe(21);
+    // Gemini Flash ranks #1 despite having only 1 event
+    expect(body.models[0]).toMatchObject({
+      id: "google/gemini-3.7-flash",
+      canonicalModelId: "google/gemini-3.7-flash",
+      processedTokens: 1_000_000,
+      cacheReadInputTokens: 600_000,
+      freshInputTokens: 200_000,
+      outputTokens: 200_000,
+    });
+    expect(body.models[0].cacheHitRate).toBeCloseTo(600_000 / 800_000);
+
+    // Dimensions models also ordered by volume
+    const dimsRes = await app.inject({ method: "GET", url: "/api/v1/dimensions" });
+    const dims = dimsRes.json();
+    expect(dims.models[0].id).toBe("google/gemini-3.7-flash");
+  });
 });

@@ -158,6 +158,50 @@ export interface AppliedFilters {
   project?: string[];
 }
 
+export interface ModelBreakdownItem {
+  id: string;
+  canonicalModelId: string | null;
+  rawModelId: string | null;
+  display: string;
+  owner: string | null;
+  processedTokens: number;
+  processedInputTokens: number;
+  freshInputTokens: number;
+  cacheReadInputTokens: number;
+  outputTokens: number;
+  costUsd: number;
+  sessions: number;
+  cacheHitRate: number | null;
+}
+
+export interface ModelsBreakdownResponse {
+  range: { from: string | null; to: string | null };
+  filters: AppliedFilters;
+  models: ModelBreakdownItem[];
+}
+
+export interface ModelBreakdownItem {
+  id: string;
+  canonicalModelId: string | null;
+  rawModelId: string | null;
+  display: string;
+  owner: string | null;
+  processedTokens: number;
+  processedInputTokens: number;
+  freshInputTokens: number;
+  cacheReadInputTokens: number;
+  outputTokens: number;
+  costUsd: number;
+  sessions: number;
+  cacheHitRate: number | null;
+}
+
+export interface ModelsBreakdownResponse {
+  range: { from: string | null; to: string | null };
+  filters: AppliedFilters;
+  models: ModelBreakdownItem[];
+}
+
 export interface SummaryTotals {
   processedTokens: number;
   processedInputTokens: number;

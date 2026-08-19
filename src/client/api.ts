@@ -46,6 +46,10 @@ export const api = {
   dimensions: () => jsonFetch<DimensionLists>("/api/v1/dimensions"),
   timeseries: (filters: RangeFilters, metric: string, groupBy: "provider" | "harness" = "provider") =>
     jsonFetch<TimeseriesResponse>(`/api/v1/timeseries?${qs({ ...filters, metric, groupBy } as Record<string, unknown>)}`),
+  modelsBreakdown: (filters: RangeFilters) =>
+    jsonFetch<ModelsBreakdownResponse>(`/api/v1/models-breakdown?${qs(filters as Record<string, unknown>)}`),
+  modelsBreakdown: (filters: RangeFilters) =>
+    jsonFetch<ModelsBreakdownResponse>(`/api/v1/models-breakdown?${qs(filters as Record<string, unknown>)}`),
   summary: (filters: RangeFilters) =>
     jsonFetch<SummaryResponse>(`/api/v1/summary?${qs(filters as Record<string, unknown>)}`),
   events: (filters: RangeFilters, cursor: string | null, pageSize: number) =>
