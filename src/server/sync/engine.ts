@@ -398,6 +398,8 @@ export class SyncEngine {
         if (++i % 500 === 0) this.repo.updateSyncRunProgress(runId, i, all.length, 0, 0, 0);
       }
       for (const s of config.sources) this.repo.recomputeSourceCounts(s.id);
+      this.repo.updateSyncRunProgress(runId, i, all.length, 0, 0, 0);
+      this.repo.finishSyncRun(runId, new Date().toISOString(), "completed", []);
     });
     return { runId, status: "started" };
   }
