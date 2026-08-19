@@ -189,7 +189,7 @@ function groupSessions(events: NormalizedUsageEvent[]): SessionRow[] {
 function sum(events: NormalizedUsageEvent[], select: (event: NormalizedUsageEvent) => number): number { return events.reduce((total, event) => total + select(event), 0); }
 function durationMs(session: SessionRow): number { return Math.max(0, Date.parse(session.finishedAt) - Date.parse(session.startedAt)); }
 function median(values: number[]): number { if (values.length === 0) return 0; const ordered = [...values].sort((a, b) => a - b); const middle = Math.floor(ordered.length / 2); return ordered.length % 2 ? ordered[middle] : (ordered[middle - 1] + ordered[middle]) / 2; }
-function harnessLabel(value: string): string { return ({ codex: "Codex", pi: "Pi", opencode: "OpenCode", "claude-code": "Claude Code" } as Record<string, string>)[value] ?? value; }
+function harnessLabel(value: string): string { return ({ codex: "Codex", pi: "Pi", opencode: "OpenCode", "claude-code": "Claude Code", cursor: "Cursor" } as Record<string, string>)[value] ?? value; }
 function shortId(value: string): string { const parts = value.replace(/\\/g, "/").split("/").filter(Boolean); return parts.at(-1) ?? value; }
 function projectLabel(projectId: string, projects: Array<{ id: string; path: string }> | undefined): string {
   const resolved = projects?.find((project) => project.id === projectId);

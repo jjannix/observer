@@ -1,6 +1,6 @@
 /** Shared contracts used across the server and client. */
 
-export const HARNESS_IDS = ["pi", "codex", "opencode", "claude-code"] as const;
+export const HARNESS_IDS = ["pi", "codex", "opencode", "claude-code", "cursor"] as const;
 export type HarnessId = (typeof HARNESS_IDS)[number];
 
 export const PROVIDER_RESOLUTIONS = [
@@ -64,6 +64,9 @@ export interface RawUsageEnvelope {
   usage: TokenUsageRecord;
   /** Only accounting/identity context — never prompts, code, or tool I/O. */
   context: Record<string, unknown>;
+  /** Collector-supplied quality flags; merged through an allowlist during
+   *  normalization (never taken verbatim from source input). */
+  qualityFlags?: string[];
 }
 
 /** Normalized token accounting extracted from a raw record by a collector. */
@@ -83,11 +86,28 @@ export interface TokenUsageRecord {
 /** Quality flags attached to a normalized event. */
 export const QUALITY_FLAGS = {
   MISSING_CACHE_WRITE: "missing-cache-write",
+  MISSING_CACHE_READ: "missing-cache-read",
   MISSING_REASONING: "missing-reasoning",
   MISSING_COST: "missing-cost",
+  APPROXIMATE_TIMESTAMP: "approximate-timestamp",
+  HISTORICAL_PARTIAL_ACCOUNTING: "historical-partial-accounting",
+  CURSOR_TOKEN_FIELDS_MISSING: "cursor-token-fields-missing",
+  MULTI_ROOT_PROJECT_AMBIGUOUS: "multi-root-project-ambiguous",
+  CURSOR_INPUT_SEMANTICS_UNVERIFIED: "cursor-input-semantics-unverified",
   QUARANTINED: "quarantined",
   DUPLICATE_TELEMETRY: "duplicate-telemetry",
 } as const;
+
+/** Flags a collector may attach to an envelope; normalization merges only
+ *  these (plus the derived ones above) — arbitrary source strings are dropped. */
+export const COLLECTOR_QUALITY_FLAGS = [
+  QUALITY_FLAGS.MISSING_CACHE_READ,
+  QUALITY_FLAGS.APPROXIMATE_TIMESTAMP,
+  QUALITY_FLAGS.HISTORICAL_PARTIAL_ACCOUNTING,
+  QUALITY_FLAGS.CURSOR_TOKEN_FIELDS_MISSING,
+  QUALITY_FLAGS.MULTI_ROOT_PROJECT_AMBIGUOUS,
+  QUALITY_FLAGS.CURSOR_INPUT_SEMANTICS_UNVERIFIED,
+] as const;
 
 /* ----------------------------- API contracts ----------------------------- */
 

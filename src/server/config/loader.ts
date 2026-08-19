@@ -59,7 +59,8 @@ export function loadConfig(configPath: string): LoadResult {
   // once while preserving all existing settings and source edits.
   const appended =
     appendMissingDefaultSource(config, "claude-code", "claude-code-projects") |
-    appendMissingDefaultSource(config, "opencode", "opencode-database");
+    appendMissingDefaultSource(config, "opencode", "opencode-database") |
+    appendMissingDefaultSource(config, "cursor", "cursor-spool");
   if (appended) saveConfig(configPath, config);
 
   return { config, created: false };

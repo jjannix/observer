@@ -1,5 +1,5 @@
 import type { NormalizedUsageEvent, RawUsageEnvelope } from "@shared/contracts";
-import { QUALITY_FLAGS } from "@shared/contracts";
+import { COLLECTOR_QUALITY_FLAGS, QUALITY_FLAGS } from "@shared/contracts";
 import {
   canonicalizeProviderId,
   hashId,
@@ -79,6 +79,15 @@ export function normalizeEnvelope(envelope: RawUsageEnvelope, config: ObserverCo
   if (!u.cacheWriteAvailable) qualityFlags.push(QUALITY_FLAGS.MISSING_CACHE_WRITE);
   if (!u.reasoningAvailable) qualityFlags.push(QUALITY_FLAGS.MISSING_REASONING);
   if (!u.costAvailable) qualityFlags.push(QUALITY_FLAGS.MISSING_COST);
+  // Collector-supplied flags pass through an allowlist only — arbitrary
+  // strings from source input are never propagated.
+  if (Array.isArray(envelope.qualityFlags)) {
+    for (const flag of envelope.qualityFlags) {
+      if ((COLLECTOR_QUALITY_FLAGS as readonly string[]).includes(flag) && !qualityFlags.includes(flag)) {
+        qualityFlags.push(flag);
+      }
+    }
+  }
 
   return {
     project,
