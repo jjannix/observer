@@ -86,6 +86,36 @@ function expandProviderFilter(db: RawDatabase, requestedProviders: string[]): st
   }
 }
 
+function expandModelFilter(db: RawDatabase, requestedModels: string[]): string[] {
+  const selectedCanonicals = new Set(
+    requestedModels.map((model) => canonicalizeModelId(model) ?? model),
+  );
+  try {
+    const stored = db
+      .prepare(
+        `SELECT DISTINCT canonical_model_id AS modelId
+         FROM usage_events WHERE canonical_model_id IS NOT NULL`,
+      )
+      .all() as Array<{ modelId: string }>;
+    const matched = new Set<string>();
+    for (const row of stored) {
+      const canonical = canonicalizeModelId(row.modelId) ?? row.modelId;
+      if (selectedCanonicals.has(canonical)) {
+        matched.add(row.modelId);
+      }
+    }
+    for (const c of selectedCanonicals) {
+      matched.add(c);
+    }
+    for (const r of requestedModels) {
+      matched.add(r);
+    }
+    return Array.from(matched);
+  } catch {
+    return requestedModels;
+  }
+}
+
 function buildWhere(db: RawDatabase, filters: RangeFilters): { sql: string; params: any[] } {
   const clauses: string[] = [];
   const params: any[] = [];
@@ -107,8 +137,9 @@ function buildWhere(db: RawDatabase, filters: RangeFilters): { sql: string; para
     params.push(...expanded);
   }
   if (filters.model && filters.model.length > 0) {
-    clauses.push(`e.canonical_model_id IN (${ph(filters.model.length)})`);
-    params.push(...filters.model);
+    const expanded = expandModelFilter(db, filters.model);
+    clauses.push(`e.canonical_model_id IN (${ph(expanded.length)})`);
+    params.push(...expanded);
   }
   if (filters.project && filters.project.length > 0) {
     clauses.push(`e.project_id IN (${ph(filters.project.length)})`);
@@ -436,15 +467,43 @@ export class Analytics {
         eventCount: p.eventCount,
       }));
 
-    const models = this.db
+    // Merge stored model spellings that canonicalize to the same id at read
+    // time (e.g. `gpt-5.6-luna` and `openai/gpt-5.6-luna`) so the filter UI
+    // offers one canonical choice instead of misleading duplicates.
+    const modelMap = new Map<string, { id: string; canonicalModelId: string | null; display: string | null; owner: string | null; eventCount: number; totalTokens: number }>();
+    const rawModels = this.db
       .prepare(
         `SELECT m.id, m.canonical_model_id AS canonicalModelId, m.display,
                 m.owner, COUNT(e.id) AS eventCount,
                 COALESCE(SUM(e.processed_tokens), 0) AS totalTokens
          FROM models m LEFT JOIN usage_events e ON e.canonical_model_id = m.id
-         GROUP BY m.id ORDER BY totalTokens DESC, eventCount DESC`,
+         GROUP BY m.id`,
       )
       .all() as any[];
+    for (const m of rawModels) {
+      const canonicalId = mergedModelId(m.id);
+      const existing = modelMap.get(canonicalId);
+      if (!existing) {
+        modelMap.set(canonicalId, {
+          id: canonicalId,
+          canonicalModelId: canonicalId === "unknown" ? null : canonicalId,
+          display: m.display ?? m.canonicalModelId,
+          owner: m.owner ?? null,
+          eventCount: m.eventCount ?? 0,
+          totalTokens: m.totalTokens ?? 0,
+        });
+      } else {
+        existing.eventCount += m.eventCount ?? 0;
+        existing.totalTokens += m.totalTokens ?? 0;
+        if (!existing.display || existing.display === canonicalId) {
+          existing.display = m.display ?? m.canonicalModelId ?? existing.display;
+        }
+        if (!existing.owner && m.owner) existing.owner = m.owner;
+      }
+    }
+    const models = Array.from(modelMap.values()).sort(
+      (a, b) => b.totalTokens - a.totalTokens || b.eventCount - a.eventCount,
+    );
     const projects = this.db
       .prepare(
         `SELECT p.id, p.display_path AS path, COUNT(e.id) AS eventCount
@@ -462,9 +521,9 @@ export class Analytics {
       models: models.map((m) => ({
         id: m.id,
         canonicalModelId: m.canonicalModelId,
-        display: m.display ?? m.canonicalModelId,
-        owner: m.owner ?? null,
-        eventCount: m.eventCount ?? 0,
+        display: m.display ?? m.canonicalModelId ?? m.id,
+        owner: m.owner,
+        eventCount: m.eventCount,
       })),
       projects: projects.map((p) => ({ id: p.id, path: p.path, eventCount: p.eventCount ?? 0 })),
     };

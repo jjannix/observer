@@ -345,6 +345,86 @@ describe("HTTP API", () => {
     expect(merged.sessions).toBe(2);
   });
 
+  it("model filter matches mixed legacy and canonical stored spellings across summary, events, and timeseries", async () => {
+    const insertModel = state.raw.prepare(
+      `INSERT OR IGNORE INTO models (id, canonical_model_id, raw_model_id, owner, display) VALUES (?, ?, ?, ?, ?)`,
+    );
+    insertModel.run("gpt-5.6-luna", "gpt-5.6-luna", "gpt-5.6-luna", "openai", "GPT 5.6 Luna");
+    insertModel.run("openai/gpt-5.6-luna", "openai/gpt-5.6-luna", "gpt-5.6-luna", "openai", "GPT 5.6 Luna");
+    insertModel.run("google/gemini-3.7-flash", "google/gemini-3.7-flash", "gemini-3.7-flash", "google", "Gemini 3.7 Flash");
+
+    const insert = state.raw.prepare(
+      `INSERT INTO usage_events
+       (id, harness, occurred_at, logical_session_id, request_id,
+        raw_model_id, canonical_model_id,
+        processed_input_tokens, fresh_input_tokens, cache_read_input_tokens, processed_tokens)
+       VALUES (?, 'pi', '2025-01-01T00:00:00Z', ?, ?, ?, ?, ?, ?, ?, ?)`,
+    );
+    // Historical mixed spellings of the same model, plus an unrelated model.
+    insert.run("mf1", "s1", "r1", "gpt-5.6-luna", "gpt-5.6-luna", 100, 100, 0, 100);
+    insert.run("mf2", "s2", "r2", "gpt-5.6-luna", "openai/gpt-5.6-luna", 200, 200, 0, 200);
+    insert.run("mf3", "s3", "r3", "gemini-3.7-flash", "google/gemini-3.7-flash", 1_000, 1_000, 0, 1_000);
+
+    // Canonical model filter matches both stored spellings in summary.
+    const summaryRes = await app.inject({
+      method: "GET",
+      url: "/api/v1/summary?model=" + encodeURIComponent("openai/gpt-5.6-luna"),
+    });
+    expect(summaryRes.statusCode).toBe(200);
+    const summary = summaryRes.json();
+    expect(summary.totals.requests).toBe(2);
+    expect(summary.totals.processedTokens).toBe(300);
+
+    // Legacy spelling filter also matches both stored spellings.
+    const legacyRes = await app.inject({
+      method: "GET",
+      url: "/api/v1/summary?model=" + encodeURIComponent("gpt-5.6-luna"),
+    });
+    expect(legacyRes.json().totals.processedTokens).toBe(300);
+
+    // Events: filtering + cursor pagination sees both spellings.
+    const eventsRes = await app.inject({
+      method: "GET",
+      url: "/api/v1/events?pageSize=1&model=" + encodeURIComponent("openai/gpt-5.6-luna"),
+    });
+    expect(eventsRes.statusCode).toBe(200);
+    const eventsBody = eventsRes.json();
+    expect(eventsBody.total).toBe(2);
+    expect(eventsBody.items).toHaveLength(1);
+    const page2 = await app.inject({
+      method: "GET",
+      url: `/api/v1/events?pageSize=1&model=${encodeURIComponent("openai/gpt-5.6-luna")}&cursor=${encodeURIComponent(eventsBody.nextCursor)}`,
+    });
+    expect(page2.json().items).toHaveLength(1);
+    expect(eventsBody.items[0].id).not.toBe(page2.json().items[0].id);
+
+    // Timeseries includes both spellings.
+    const tsRes = await app.inject({
+      method: "GET",
+      url: "/api/v1/timeseries?metric=processedTokens&groupBy=provider&model=" + encodeURIComponent("openai/gpt-5.6-luna"),
+    });
+    const ts = tsRes.json();
+    const total = ts.points.reduce((sum: number, p: any) => sum + p.value, 0);
+    expect(total).toBe(300);
+
+    // Unrelated model filter stays isolated.
+    const otherRes = await app.inject({
+      method: "GET",
+      url: "/api/v1/summary?model=" + encodeURIComponent("google/gemini-3.7-flash"),
+    });
+    expect(otherRes.json().totals.requests).toBe(1);
+    expect(otherRes.json().totals.processedTokens).toBe(1_000);
+
+    // Dimensions offer one canonical model choice, not duplicate spellings.
+    const dimsRes = await app.inject({ method: "GET", url: "/api/v1/dimensions" });
+    const dims = dimsRes.json();
+    const modelIds = dims.models.map((m: any) => m.id);
+    expect(modelIds).toContain("openai/gpt-5.6-luna");
+    expect(modelIds).not.toContain("gpt-5.6-luna");
+    const luna = dims.models.find((m: any) => m.id === "openai/gpt-5.6-luna");
+    expect(luna.eventCount).toBe(2);
+  });
+
   it("models-breakdown returns range-filtered models ranked by token volume", async () => {
     const insert = state.raw.prepare(
       `INSERT INTO usage_events
