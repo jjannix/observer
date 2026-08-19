@@ -173,4 +173,40 @@ describe("HTTP API", () => {
     const ok = await app.inject({ method: "POST", url: "/api/v1/rebuild", payload: { confirm: "rebuild" } });
     expect(ok.statusCode).toBe(202);
   });
+
+  it("read-time canonicalization merges stale provider rows in dimensions, timeseries, and summary", async () => {
+    const insert = state.raw.prepare(
+      `INSERT INTO usage_events
+       (id, harness, occurred_at, logical_session_id, request_id, raw_provider_id, canonical_provider_id,
+        provider_resolution, processed_input_tokens, fresh_input_tokens,
+        cache_read_input_tokens, processed_tokens)
+       VALUES (?, 'pi', '2025-01-01T00:00:00Z', ?, ?, ?, ?, 'source', ?, ?, ?, ?)`,
+    );
+
+    insert.run("e1", "s1", "r1", "glm", "glm", 100, 100, 0, 100);
+    insert.run("e2", "s2", "r2", "zai-coding-plan", "zai-coding-plan", 200, 200, 0, 200);
+    insert.run("e3", "s3", "r3", "glm", "zai", 300, 300, 0, 300);
+
+    // Dimensions: providers collapsed to "zai"
+    const dimsRes = await app.inject({ method: "GET", url: "/api/v1/dimensions" });
+    const dims = dimsRes.json();
+    expect(dims.providers.find((p: any) => p.id === "glm")).toBeUndefined();
+    expect(dims.providers.find((p: any) => p.id === "zai-coding-plan")).toBeUndefined();
+    const zai = dims.providers.find((p: any) => p.id === "zai");
+    expect(zai).toBeDefined();
+    expect(zai.display).toBe("Z.AI");
+    expect(zai.eventCount).toBe(3);
+
+    // Timeseries: grouped under single "zai" provider
+    const tsRes = await app.inject({ method: "GET", url: "/api/v1/timeseries?metric=processedTokens&groupBy=provider" });
+    const ts = tsRes.json();
+    expect(ts.providers).toEqual(["zai"]);
+    expect(ts.points).toEqual([{ date: "2025-01-01", provider: "zai", value: 600 }]);
+
+    // Summary: provider=zai filter matches all 3 events
+    const summaryRes = await app.inject({ method: "GET", url: "/api/v1/summary?provider=zai" });
+    const summary = summaryRes.json();
+    expect(summary.totals.requests).toBe(3);
+    expect(summary.totals.processedTokens).toBe(600);
+  });
 });

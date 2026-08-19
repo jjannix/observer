@@ -42,7 +42,7 @@ export function registerApi(app: FastifyInstance, state: AppState): void {
     return toSyncRunInfo(state.repo.getSyncRun(id));
   });
 
-  app.get("/api/v1/dimensions", async () => analytics.dimensions());
+  app.get("/api/v1/dimensions", async () => analytics.dimensions(state.getConfig().providerAliases));
 
   app.get("/api/v1/timeseries", async (req) => {
     const q = req.query as Record<string, unknown>;
