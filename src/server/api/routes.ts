@@ -42,7 +42,7 @@ export function registerApi(app: FastifyInstance, state: AppState): void {
     return toSyncRunInfo(state.repo.getSyncRun(id));
   });
 
-  app.get("/api/v1/dimensions", async () => analytics.dimensions());
+  app.get("/api/v1/dimensions", async () => analytics.dimensions(state.getConfig().providerAliases));
 
   app.get("/api/v1/timeseries", async (req) => {
     const q = req.query as Record<string, unknown>;
@@ -53,6 +53,17 @@ export function registerApi(app: FastifyInstance, state: AppState): void {
 
   app.get("/api/v1/summary", async (req): Promise<unknown> => {
     return analytics.summary(parseFilters(req.query as Record<string, unknown>));
+  });
+
+  app.get("/api/v1/models-breakdown", async (req): Promise<unknown> => {
+    return analytics.modelsBreakdown(parseFilters(req.query as Record<string, unknown>));
+  });
+
+  app.get("/api/v1/cache-attribution", async (req): Promise<unknown> => {
+    return analytics.cacheAttribution(
+      parseFilters(req.query as Record<string, unknown>),
+      state.getConfig().providerAliases,
+    );
   });
 
   app.get("/api/v1/events", async (req) => {

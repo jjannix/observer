@@ -178,6 +178,58 @@ export interface AppliedFilters {
   project?: string[];
 }
 
+export interface CacheAttributionProvider {
+  providerId: string;
+  display: string;
+  processedInputTokens: number;
+  cacheReadInputTokens: number;
+  observedRate: number | null;
+  inputShare: number | null;
+  otherHarnessRate: number | null;
+  comparatorInputTokens: number;
+  comparisonNote: string | null;
+  lift: number | null;
+}
+
+export interface CacheAttributionHarness {
+  harness: HarnessId;
+  processedInputTokens: number;
+  cacheReadInputTokens: number;
+  observedRate: number | null;
+  comparableObservedRate: number | null;
+  providerExpectedRate: number | null;
+  adjustedLift: number | null;
+  comparisonCoverage: number | null;
+  providers: CacheAttributionProvider[];
+}
+
+export interface CacheAttributionResponse {
+  filters: AppliedFilters;
+  harnesses: CacheAttributionHarness[];
+}
+
+export interface ModelBreakdownItem {
+  id: string;
+  canonicalModelId: string | null;
+  rawModelId: string | null;
+  display: string;
+  owner: string | null;
+  processedTokens: number;
+  processedInputTokens: number;
+  freshInputTokens: number;
+  cacheReadInputTokens: number;
+  outputTokens: number;
+  costUsd: number;
+  sessions: number;
+  cacheHitRate: number | null;
+}
+
+export interface ModelsBreakdownResponse {
+  range: { from: string | null; to: string | null };
+  filters: AppliedFilters;
+  models: ModelBreakdownItem[];
+}
+
 export interface SummaryTotals {
   processedTokens: number;
   processedInputTokens: number;

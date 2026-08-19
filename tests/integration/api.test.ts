@@ -90,6 +90,69 @@ describe("HTTP API", () => {
     expect(body.totals.costUsd).toBeCloseTo(0.01, 6);
   });
 
+  it("attributes cache reuse against other harnesses on shared providers", async () => {
+    const insert = state.raw.prepare(
+      `INSERT INTO usage_events
+       (id, harness, occurred_at, logical_session_id, request_id, canonical_provider_id,
+        provider_resolution, processed_input_tokens, fresh_input_tokens,
+        cache_read_input_tokens, processed_tokens)
+       VALUES (?, ?, '2025-01-01T00:00:00Z', ?, ?, ?, 'source', ?, ?, ?, ?)`,
+    );
+    const add = (id: string, harness: string, provider: string, input: number, cacheRead: number) => {
+      insert.run(id, harness, `${harness}-${id}`, id, provider, input, input - cacheRead, cacheRead, input);
+    };
+    // Historical aliases must compare as one canonical provider without a rebuild.
+    add("pi-shared", "pi", "glm", 100_000_000, 80_000_000);
+    add("pi-exclusive", "pi", "pi-only", 100_000_000, 100_000_000);
+    add("codex-shared", "codex", "zai-coding-plan", 100_000_000, 60_000_000);
+    // A second routed family proves alias merging is generic, not glm-specific.
+    add("pi-kimi", "pi", "kimi-coding", 20_000_000, 18_000_000);
+    add("codex-kimi", "codex", "moonshot-ai", 20_000_000, 10_000_000);
+
+    const res = await app.inject({ method: "GET", url: "/api/v1/cache-attribution" });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    const pi = body.harnesses.find((row: any) => row.harness === "pi");
+    const codex = body.harnesses.find((row: any) => row.harness === "codex");
+    // Pi: 220M input (zai 100M @80M, pi-only 100M @100M, moonshot 20M @18M).
+    expect(pi).toMatchObject({
+      observedRate: 0.9,
+      comparableObservedRate: 98_000_000 / 120_000_000,
+      providerExpectedRate: 70_000_000 / 120_000_000,
+      comparisonCoverage: 120_000_000 / 220_000_000,
+    });
+    expect(pi.adjustedLift).toBeCloseTo(28_000_000 / 120_000_000, 8);
+    // Codex: 120M input (zai 100M @60M, moonshot 20M @10M); all qualified.
+    expect(codex).toMatchObject({
+      observedRate: 70_000_000 / 120_000_000,
+      comparableObservedRate: 70_000_000 / 120_000_000,
+      providerExpectedRate: 98_000_000 / 120_000_000,
+      comparisonCoverage: 1,
+    });
+    expect(codex.adjustedLift).toBeCloseTo(-28_000_000 / 120_000_000, 8);
+    expect(pi.providers.find((provider: any) => provider.providerId === "zai")).toMatchObject({ otherHarnessRate: 0.6, display: "Z.AI" });
+    const moonshot = pi.providers.find((provider: any) => provider.providerId === "moonshot");
+    expect(moonshot).toMatchObject({ otherHarnessRate: 0.5, display: "Moonshot AI" });
+    expect(pi.providers.find((provider: any) => provider.providerId === "pi-only")).toMatchObject({ otherHarnessRate: null, lift: null });
+
+    const filtered = await app.inject({ method: "GET", url: "/api/v1/cache-attribution?provider=glm" });
+    const filteredBody = filtered.json();
+    expect(filteredBody.harnesses.map((row: any) => row.harness).sort()).toEqual(["codex", "pi"]);
+    expect(filteredBody.harnesses.every((row: any) => row.providers[0].providerId === "zai")).toBe(true);
+    // Filtering by any alias spelling of the same family selects the merged cells.
+    const kimiFiltered = await app.inject({ method: "GET", url: "/api/v1/cache-attribution?provider=kimi" });
+    expect(kimiFiltered.json().harnesses.map((row: any) => row.harness).sort()).toEqual(["codex", "pi"]);
+    expect(kimiFiltered.json().harnesses.every((row: any) => row.providers.every((p: any) => p.providerId === "moonshot"))).toBe(true);
+
+    // A tiny OpenCode OpenRouter sample cannot set Pi's OpenRouter baseline.
+    add("pi-router", "pi", "openrouter", 220_000_000, 206_800_000);
+    add("opencode-router", "opencode", "openrouter", 87_800, 22_915);
+    const imbalanced = await app.inject({ method: "GET", url: "/api/v1/cache-attribution" });
+    const imbalancedPi = imbalanced.json().harnesses.find((row: any) => row.harness === "pi");
+    const router = imbalancedPi.providers.find((provider: any) => provider.providerId === "openrouter");
+    expect(router).toMatchObject({ otherHarnessRate: null, lift: null, comparisonNote: "no peer with at least 1M input and a 20×-balanced sample" });
+  });
+
   it("date ranges are end-exclusive", async () => {
     writeFileSync(
       join(piRoot, "sx.jsonl"),
@@ -153,6 +216,19 @@ describe("HTTP API", () => {
     const timeseries = await app.inject({ method: "GET", url: "/api/v1/timeseries?metric=processedTokens&groupBy=harness" });
     expect(timeseries.statusCode).toBe(200);
     expect(timeseries.json()).toMatchObject({ groupBy: "harness", providers: ["pi"] });
+
+    const attribution = await app.inject({ method: "GET", url: "/api/v1/cache-attribution" });
+    expect(attribution.statusCode).toBe(200);
+    expect(attribution.json()).toMatchObject({
+      harnesses: [{
+        harness: "pi",
+        processedInputTokens: 50,
+        observedRate: 0,
+        adjustedLift: null,
+        comparisonCoverage: 0,
+        providers: [{ providerId: "openai", inputShare: 1, otherHarnessRate: null }],
+      }],
+    });
   });
 
   it("invalid PUT /config is rejected without corrupting prior file", async () => {
@@ -172,5 +248,249 @@ describe("HTTP API", () => {
     expect(res.statusCode).toBe(400);
     const ok = await app.inject({ method: "POST", url: "/api/v1/rebuild", payload: { confirm: "rebuild" } });
     expect(ok.statusCode).toBe(202);
+  });
+
+  it("read-time canonicalization merges stale provider rows in dimensions, timeseries, and summary", async () => {
+    const insert = state.raw.prepare(
+      `INSERT INTO usage_events
+       (id, harness, occurred_at, logical_session_id, request_id, raw_provider_id, canonical_provider_id,
+        provider_resolution, processed_input_tokens, fresh_input_tokens,
+        cache_read_input_tokens, processed_tokens)
+       VALUES (?, 'pi', '2025-01-01T00:00:00Z', ?, ?, ?, ?, 'source', ?, ?, ?, ?)`,
+    );
+
+    insert.run("e1", "s1", "r1", "glm", "glm", 100, 100, 0, 100);
+    insert.run("e2", "s2", "r2", "zai-coding-plan", "zai-coding-plan", 200, 200, 0, 200);
+    insert.run("e3", "s3", "r3", "glm", "zai", 300, 300, 0, 300);
+
+    // Dimensions: providers collapsed to "zai"
+    const dimsRes = await app.inject({ method: "GET", url: "/api/v1/dimensions" });
+    const dims = dimsRes.json();
+    expect(dims.providers.find((p: any) => p.id === "glm")).toBeUndefined();
+    expect(dims.providers.find((p: any) => p.id === "zai-coding-plan")).toBeUndefined();
+    const zai = dims.providers.find((p: any) => p.id === "zai");
+    expect(zai).toBeDefined();
+    expect(zai.display).toBe("Z.AI");
+    expect(zai.eventCount).toBe(3);
+
+    // Timeseries: grouped under single "zai" provider
+    const tsRes = await app.inject({ method: "GET", url: "/api/v1/timeseries?metric=processedTokens&groupBy=provider" });
+    const ts = tsRes.json();
+    expect(ts.providers).toEqual(["zai"]);
+    expect(ts.points).toEqual([{ date: "2025-01-01", provider: "zai", value: 600 }]);
+
+    // Summary: provider=zai filter matches all 3 events
+    const summaryRes = await app.inject({ method: "GET", url: "/api/v1/summary?provider=zai" });
+    const summary = summaryRes.json();
+    expect(summary.totals.requests).toBe(3);
+    expect(summary.totals.processedTokens).toBe(600);
+  });
+
+  it("events expose canonicalized provider and model ids for stale rows", async () => {
+    const insert = state.raw.prepare(
+      `INSERT INTO usage_events
+       (id, harness, occurred_at, logical_session_id, request_id, raw_provider_id, canonical_provider_id,
+        provider_resolution, raw_model_id, canonical_model_id,
+        processed_input_tokens, fresh_input_tokens, cache_read_input_tokens, processed_tokens)
+       VALUES (?, 'pi', '2025-01-01T00:00:00Z', ?, ?, ?, ?, 'source', ?, ?, ?, ?, ?, ?)`,
+    );
+
+    // Rows stored before the zai/openai routing changes keep stale ids.
+    insert.run("ev1", "s1", "r1", "glm", "glm", "gpt-5.6-luna", "gpt-5.6-luna", 100, 100, 0, 100);
+    insert.run("ev2", "s2", "r2", "zai-coding-plan", "zai-coding-plan", "gpt-5.6-luna", "openai/gpt-5.6-luna", 100, 100, 0, 100);
+
+    // Filtering by the canonical provider matches both rows...
+    const res = await app.inject({ method: "GET", url: "/api/v1/events?provider=zai" });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.items).toHaveLength(2);
+    // ...and every row reports the canonical ids, never the stale spellings.
+    for (const item of body.items) {
+      expect(item.canonicalProviderId).toBe("zai");
+      expect(item.canonicalModelId).toBe("openai/gpt-5.6-luna");
+    }
+    expect(body.items.map((item: any) => item.rawProviderId).sort()).toEqual(["glm", "zai-coding-plan"]);
+  });
+
+  it("models-breakdown counts sessions once when legacy model ids merge", async () => {
+    const insertSession = state.raw.prepare(
+      `INSERT INTO sessions (id, harness, logical_session_id, first_seen, last_seen)
+       VALUES (?, 'pi', ?, '2025-01-01T00:00:00Z', '2025-01-01T00:00:00Z')`,
+    );
+    insertSession.run("pi:s1", "s1");
+    insertSession.run("pi:s2", "s2");
+
+    const insert = state.raw.prepare(
+      `INSERT INTO usage_events
+       (id, harness, occurred_at, session_id, logical_session_id, request_id,
+        raw_model_id, canonical_model_id,
+        processed_input_tokens, fresh_input_tokens, cache_read_input_tokens, processed_tokens)
+       VALUES (?, 'pi', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    );
+
+    // Session s1 seen under both a legacy and the canonical model id.
+    insert.run("mb1", "2025-01-01T00:00:00Z", "pi:s1", "s1", "r1", "gpt-5.6-luna", "gpt-5.6-luna", 100, 100, 0, 100);
+    insert.run("mb2", "2025-01-01T01:00:00Z", "pi:s1", "s1", "r2", "gpt-5.6-luna", "openai/gpt-5.6-luna", 100, 100, 0, 100);
+    // A distinct session on the canonical id alone.
+    insert.run("mb3", "2025-01-01T02:00:00Z", "pi:s2", "s2", "r3", "gpt-5.6-luna", "openai/gpt-5.6-luna", 100, 100, 0, 100);
+
+    const res = await app.inject({ method: "GET", url: "/api/v1/models-breakdown" });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    const merged = body.models.find((m: any) => m.id === "openai/gpt-5.6-luna");
+    expect(merged).toBeDefined();
+    expect(merged.processedTokens).toBe(300);
+    // Token totals are additive, but s1 must only count once despite the two
+    // stored spellings (a summed count would report 3).
+    expect(merged.sessions).toBe(2);
+  });
+
+  it("model filter matches mixed legacy and canonical stored spellings across summary, events, and timeseries", async () => {
+    const insertModel = state.raw.prepare(
+      `INSERT OR IGNORE INTO models (id, canonical_model_id, raw_model_id, owner, display) VALUES (?, ?, ?, ?, ?)`,
+    );
+    insertModel.run("gpt-5.6-luna", "gpt-5.6-luna", "gpt-5.6-luna", "openai", "GPT 5.6 Luna");
+    insertModel.run("openai/gpt-5.6-luna", "openai/gpt-5.6-luna", "gpt-5.6-luna", "openai", "GPT 5.6 Luna");
+    insertModel.run("google/gemini-3.7-flash", "google/gemini-3.7-flash", "gemini-3.7-flash", "google", "Gemini 3.7 Flash");
+
+    const insert = state.raw.prepare(
+      `INSERT INTO usage_events
+       (id, harness, occurred_at, logical_session_id, request_id,
+        raw_model_id, canonical_model_id,
+        processed_input_tokens, fresh_input_tokens, cache_read_input_tokens, processed_tokens)
+       VALUES (?, 'pi', '2025-01-01T00:00:00Z', ?, ?, ?, ?, ?, ?, ?, ?)`,
+    );
+    // Historical mixed spellings of the same model, plus an unrelated model.
+    insert.run("mf1", "s1", "r1", "gpt-5.6-luna", "gpt-5.6-luna", 100, 100, 0, 100);
+    insert.run("mf2", "s2", "r2", "gpt-5.6-luna", "openai/gpt-5.6-luna", 200, 200, 0, 200);
+    insert.run("mf3", "s3", "r3", "gemini-3.7-flash", "google/gemini-3.7-flash", 1_000, 1_000, 0, 1_000);
+
+    // Canonical model filter matches both stored spellings in summary.
+    const summaryRes = await app.inject({
+      method: "GET",
+      url: "/api/v1/summary?model=" + encodeURIComponent("openai/gpt-5.6-luna"),
+    });
+    expect(summaryRes.statusCode).toBe(200);
+    const summary = summaryRes.json();
+    expect(summary.totals.requests).toBe(2);
+    expect(summary.totals.processedTokens).toBe(300);
+
+    // Legacy spelling filter also matches both stored spellings.
+    const legacyRes = await app.inject({
+      method: "GET",
+      url: "/api/v1/summary?model=" + encodeURIComponent("gpt-5.6-luna"),
+    });
+    expect(legacyRes.json().totals.processedTokens).toBe(300);
+
+    // Events: filtering + cursor pagination sees both spellings.
+    const eventsRes = await app.inject({
+      method: "GET",
+      url: "/api/v1/events?pageSize=1&model=" + encodeURIComponent("openai/gpt-5.6-luna"),
+    });
+    expect(eventsRes.statusCode).toBe(200);
+    const eventsBody = eventsRes.json();
+    expect(eventsBody.total).toBe(2);
+    expect(eventsBody.items).toHaveLength(1);
+    const page2 = await app.inject({
+      method: "GET",
+      url: `/api/v1/events?pageSize=1&model=${encodeURIComponent("openai/gpt-5.6-luna")}&cursor=${encodeURIComponent(eventsBody.nextCursor)}`,
+    });
+    expect(page2.json().items).toHaveLength(1);
+    expect(eventsBody.items[0].id).not.toBe(page2.json().items[0].id);
+
+    // Timeseries includes both spellings.
+    const tsRes = await app.inject({
+      method: "GET",
+      url: "/api/v1/timeseries?metric=processedTokens&groupBy=provider&model=" + encodeURIComponent("openai/gpt-5.6-luna"),
+    });
+    const ts = tsRes.json();
+    const total = ts.points.reduce((sum: number, p: any) => sum + p.value, 0);
+    expect(total).toBe(300);
+
+    // Unrelated model filter stays isolated.
+    const otherRes = await app.inject({
+      method: "GET",
+      url: "/api/v1/summary?model=" + encodeURIComponent("google/gemini-3.7-flash"),
+    });
+    expect(otherRes.json().totals.requests).toBe(1);
+    expect(otherRes.json().totals.processedTokens).toBe(1_000);
+
+    // Dimensions offer one canonical model choice, not duplicate spellings.
+    const dimsRes = await app.inject({ method: "GET", url: "/api/v1/dimensions" });
+    const dims = dimsRes.json();
+    const modelIds = dims.models.map((m: any) => m.id);
+    expect(modelIds).toContain("openai/gpt-5.6-luna");
+    expect(modelIds).not.toContain("gpt-5.6-luna");
+    const luna = dims.models.find((m: any) => m.id === "openai/gpt-5.6-luna");
+    expect(luna.eventCount).toBe(2);
+  });
+
+  it("models-breakdown returns range-filtered models ranked by token volume", async () => {
+    const insert = state.raw.prepare(
+      `INSERT INTO usage_events
+       (id, harness, occurred_at, logical_session_id, request_id, raw_model_id, canonical_model_id,
+        processed_input_tokens, fresh_input_tokens, cache_read_input_tokens, output_tokens, processed_tokens)
+       VALUES (?, 'pi', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    );
+
+    const insertModel = state.raw.prepare(
+      `INSERT OR IGNORE INTO models (id, canonical_model_id, raw_model_id, owner, display) VALUES (?, ?, ?, ?, ?)`,
+    );
+
+    // Insert 20 models with 5 events each, 100 tokens per event (500 tokens total per model)
+    for (let m = 1; m <= 20; m++) {
+      insertModel.run(`test/model-${m}`, `test/model-${m}`, `model-${m}`, "test", `Model ${m}`);
+      for (let e = 1; e <= 5; e++) {
+        insert.run(
+          `m${m}_e${e}`,
+          `2025-01-0${e}T00:00:00Z`,
+          `s_${m}`,
+          `r_${m}_${e}`,
+          `model-${m}`,
+          `test/model-${m}`,
+          90,
+          90,
+          0,
+          10,
+          100,
+        );
+      }
+    }
+
+    // Insert 1 model with only 1 event, but 1,000,000 tokens
+    insertModel.run("google/gemini-3.7-flash", "google/gemini-3.7-flash", "gemini-3.7-flash", "google", "Gemini 3.7 Flash");
+    insert.run(
+      "gemini_e1",
+      "2025-01-01T00:00:00Z",
+      "s_gemini",
+      "r_gemini_1",
+      "gemini-3.7-flash",
+      "google/gemini-3.7-flash",
+      800_000,
+      200_000,
+      600_000,
+      200_000,
+      1_000_000,
+    );
+
+    const res = await app.inject({ method: "GET", url: "/api/v1/models-breakdown" });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.models.length).toBe(21);
+    // Gemini Flash ranks #1 despite having only 1 event
+    expect(body.models[0]).toMatchObject({
+      id: "google/gemini-3.7-flash",
+      canonicalModelId: "google/gemini-3.7-flash",
+      processedTokens: 1_000_000,
+      cacheReadInputTokens: 600_000,
+      freshInputTokens: 200_000,
+      outputTokens: 200_000,
+    });
+    expect(body.models[0].cacheHitRate).toBeCloseTo(600_000 / 800_000);
+
+    // Dimensions models also ordered by volume
+    const dimsRes = await app.inject({ method: "GET", url: "/api/v1/dimensions" });
+    const dims = dimsRes.json();
+    expect(dims.models[0].id).toBe("google/gemini-3.7-flash");
   });
 });

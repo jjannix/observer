@@ -506,8 +506,12 @@ describe("sync lifecycle", () => {
     const sourceBefore = repo.getSource("claude-code-projects");
     expect(sourceBefore.duplicates).toBe(2);
 
-    engine.renormalize();
+    const renormRun = engine.renormalize();
     await engine.join();
+    // The run row is finalized on success, not left in "running" forever.
+    const finalized = repo.getSyncRun(renormRun.runId) as any;
+    expect(finalized.phase).toBe("completed");
+    expect(finalized.finished_at).not.toBeNull();
 
     // Exactly one normalized raw snapshot remains for the request; renormalize
     // is order-independent because only the final version is replayed.

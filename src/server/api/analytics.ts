@@ -2,8 +2,11 @@ import type { RawDatabase } from "../db/index.js";
 import { formatInTimeZone } from "date-fns-tz";
 import {
   type AppliedFilters,
+  type CacheAttributionResponse,
   type DimensionLists,
   type EventsPage,
+  type ModelBreakdownItem,
+  type ModelsBreakdownResponse,
   type NormalizedUsageEvent,
   type SummaryResponse,
   type SummaryTotals,
@@ -13,6 +16,12 @@ import {
 import {
   nanoToUsd,
 } from "../normalization/metrics.js";
+import {
+  canonicalizeModelId,
+  canonicalizeProviderId,
+  modelDisplay,
+  modelOwner,
+} from "../normalization/canonical.js";
 
 export type TimeseriesMetric =
   | "processedTokens"
@@ -23,6 +32,10 @@ export type TimeseriesMetric =
   | "costUsd"
   | "requests";
 export type TimeseriesGroupBy = "provider" | "harness";
+
+const MIN_COMPARABLE_PROVIDER_INPUT_TOKENS = 1_000_000;
+const MIN_COMPARABLE_PROVIDER_SHARE = 0.05;
+const MAX_COMPARABLE_INPUT_RATIO = 20;
 
 export interface TimeseriesPoint {
   date: string; // Berlin calendar day "yyyy-MM-dd"
@@ -43,7 +56,67 @@ export interface RangeFilters extends AppliedFilters {
   to?: string | null;
 }
 
-function buildWhere(filters: RangeFilters): { sql: string; params: any[] } {
+function expandProviderFilter(db: RawDatabase, requestedProviders: string[]): string[] {
+  const selectedCanonicals = new Set(
+    requestedProviders.map((provider) => canonicalizeProviderId(provider) ?? provider),
+  );
+  try {
+    const stored = db
+      .prepare(
+        `SELECT DISTINCT canonical_provider_id AS providerId
+         FROM usage_events WHERE canonical_provider_id IS NOT NULL`,
+      )
+      .all() as Array<{ providerId: string }>;
+    const matched = new Set<string>();
+    for (const row of stored) {
+      const canonical = canonicalizeProviderId(row.providerId) ?? row.providerId;
+      if (selectedCanonicals.has(canonical)) {
+        matched.add(row.providerId);
+      }
+    }
+    for (const c of selectedCanonicals) {
+      matched.add(c);
+    }
+    for (const r of requestedProviders) {
+      matched.add(r);
+    }
+    return Array.from(matched);
+  } catch {
+    return requestedProviders;
+  }
+}
+
+function expandModelFilter(db: RawDatabase, requestedModels: string[]): string[] {
+  const selectedCanonicals = new Set(
+    requestedModels.map((model) => canonicalizeModelId(model) ?? model),
+  );
+  try {
+    const stored = db
+      .prepare(
+        `SELECT DISTINCT canonical_model_id AS modelId
+         FROM usage_events WHERE canonical_model_id IS NOT NULL`,
+      )
+      .all() as Array<{ modelId: string }>;
+    const matched = new Set<string>();
+    for (const row of stored) {
+      const canonical = canonicalizeModelId(row.modelId) ?? row.modelId;
+      if (selectedCanonicals.has(canonical)) {
+        matched.add(row.modelId);
+      }
+    }
+    for (const c of selectedCanonicals) {
+      matched.add(c);
+    }
+    for (const r of requestedModels) {
+      matched.add(r);
+    }
+    return Array.from(matched);
+  } catch {
+    return requestedModels;
+  }
+}
+
+function buildWhere(db: RawDatabase, filters: RangeFilters): { sql: string; params: any[] } {
   const clauses: string[] = [];
   const params: any[] = [];
   if (filters.from) {
@@ -59,12 +132,14 @@ function buildWhere(filters: RangeFilters): { sql: string; params: any[] } {
     params.push(...filters.harness);
   }
   if (filters.provider && filters.provider.length > 0) {
-    clauses.push(`e.canonical_provider_id IN (${ph(filters.provider.length)})`);
-    params.push(...filters.provider);
+    const expanded = expandProviderFilter(db, filters.provider);
+    clauses.push(`e.canonical_provider_id IN (${ph(expanded.length)})`);
+    params.push(...expanded);
   }
   if (filters.model && filters.model.length > 0) {
-    clauses.push(`e.canonical_model_id IN (${ph(filters.model.length)})`);
-    params.push(...filters.model);
+    const expanded = expandModelFilter(db, filters.model);
+    clauses.push(`e.canonical_model_id IN (${ph(expanded.length)})`);
+    params.push(...expanded);
   }
   if (filters.project && filters.project.length > 0) {
     clauses.push(`e.project_id IN (${ph(filters.project.length)})`);
@@ -77,11 +152,45 @@ function ph(n: number): string {
   return Array.from({ length: n }, () => "?").join(",");
 }
 
+/**
+ * Resolve a display name for a canonical provider id using every raw
+ * spelling seen on events plus the user's provider aliases. Generic for any
+ * routed family: whichever raw id (zai, glm, zai-coding-plan, ...) maps onto
+ * the canonical id contributes its alias label; the id itself is the
+ * fallback. Unknown stays explicit.
+ */
+function providerDisplayNameFactory(
+  db: RawDatabase,
+  providerAliases: Array<{ raw: string; display: string }>,
+): (canonicalId: string) => string {
+  const aliasByRaw = new Map(providerAliases.map((alias) => [alias.raw.toLowerCase(), alias.display]));
+  const byCanonical = new Map<string, string>();
+  try {
+    const pairs = db
+      .prepare(
+        `SELECT DISTINCT raw_provider_id AS raw, canonical_provider_id AS canonical
+         FROM usage_events WHERE raw_provider_id IS NOT NULL`,
+      )
+      .all() as Array<{ raw: string; canonical: string | null }>;
+    for (const pair of pairs) {
+      const canonical = canonicalizeProviderId(pair.canonical ?? pair.raw) ?? pair.raw;
+      const display = aliasByRaw.get(pair.raw.toLowerCase());
+      if (display && !byCanonical.has(canonical)) byCanonical.set(canonical, display);
+      if (pair.raw.toLowerCase() === canonical && display) byCanonical.set(canonical, display);
+    }
+  } catch {
+  }
+  return (canonicalId: string) => {
+    if (canonicalId === "unknown") return "Unknown provider";
+    return byCanonical.get(canonicalId) ?? aliasByRaw.get(canonicalId) ?? canonicalId;
+  };
+}
+
 export class Analytics {
   constructor(private db: RawDatabase) {}
 
   summary(filters: RangeFilters): SummaryResponse {
-    const { sql, params } = buildWhere(filters);
+    const { sql, params } = buildWhere(this.db, filters);
     const row = this.db
       .prepare(
         `SELECT
@@ -157,9 +266,135 @@ export class Analytics {
     };
   }
 
+  cacheAttribution(filters: RangeFilters, providerAliases: Array<{ raw: string; display: string }> = []): CacheAttributionResponse {
+    const displayFor = providerDisplayNameFactory(this.db, providerAliases);
+    const attributionFilters = filters.provider?.length ? { ...filters, provider: undefined } : filters;
+    const { sql, params } = buildWhere(this.db, attributionFilters);
+    const rawRows = this.db
+      .prepare(
+        `SELECT e.harness AS harness,
+                COALESCE(e.canonical_provider_id, 'unknown') AS providerId,
+                COALESCE(SUM(e.processed_input_tokens), 0) AS processedInputTokens,
+                COALESCE(SUM(e.cache_read_input_tokens), 0) AS cacheReadInputTokens
+         FROM usage_events e ${sql}
+         GROUP BY e.harness, COALESCE(e.canonical_provider_id, 'unknown')
+         HAVING SUM(e.processed_input_tokens) > 0`,
+      )
+      .all(...params) as Array<{
+        harness: string;
+        providerId: string;
+        processedInputTokens: number;
+        cacheReadInputTokens: number;
+      }>;
+    const selectedProviders = filters.provider?.length
+      ? new Set(filters.provider.map((provider) => canonicalizeProviderId(provider) ?? provider))
+      : null;
+    const cellMap = new Map<string, (typeof rawRows)[number]>();
+    for (const rawRow of rawRows) {
+      const providerId = rawRow.providerId === "unknown"
+        ? "unknown"
+        : canonicalizeProviderId(rawRow.providerId) ?? rawRow.providerId;
+      if (selectedProviders && !selectedProviders.has(providerId)) continue;
+      const key = `${rawRow.harness}|${providerId}`;
+      const cell = cellMap.get(key) ?? {
+        harness: rawRow.harness,
+        providerId,
+        processedInputTokens: 0,
+        cacheReadInputTokens: 0,
+      };
+      cell.processedInputTokens += rawRow.processedInputTokens;
+      cell.cacheReadInputTokens += rawRow.cacheReadInputTokens;
+      cellMap.set(key, cell);
+    }
+    const rows = [...cellMap.values()];
+
+    const providerCells = new Map<string, typeof rows>();
+    const harnessCells = new Map<string, typeof rows>();
+    for (const row of rows) {
+      providerCells.set(row.providerId, [...(providerCells.get(row.providerId) ?? []), row]);
+      harnessCells.set(row.harness, [...(harnessCells.get(row.harness) ?? []), row]);
+    }
+
+    const harnesses = [...harnessCells.entries()].map(([harness, cells]) => {
+      const processedInputTokens = cells.reduce((sum, cell) => sum + cell.processedInputTokens, 0);
+      const cacheReadInputTokens = cells.reduce((sum, cell) => sum + cell.cacheReadInputTokens, 0);
+      const providers = cells
+        .map((cell) => {
+          const inputShare = processedInputTokens > 0 ? cell.processedInputTokens / processedInputTokens : null;
+          const observedRate = cell.processedInputTokens > 0
+            ? cell.cacheReadInputTokens / cell.processedInputTokens
+            : null;
+          const cellsForProvider = providerCells.get(cell.providerId) ?? [];
+          const qualifiedPeers = cellsForProvider.filter((peer) => {
+            if (peer.harness === harness) return false;
+            if (cell.providerId === "unknown") return false;
+            if (cell.processedInputTokens < MIN_COMPARABLE_PROVIDER_INPUT_TOKENS) return false;
+            if (peer.processedInputTokens < MIN_COMPARABLE_PROVIDER_INPUT_TOKENS) return false;
+            const ratio = Math.max(cell.processedInputTokens, peer.processedInputTokens)
+              / Math.min(cell.processedInputTokens, peer.processedInputTokens);
+            return ratio <= MAX_COMPARABLE_INPUT_RATIO;
+          });
+          const comparatorInputTokens = qualifiedPeers.reduce((sum, peer) => sum + peer.processedInputTokens, 0);
+          const comparatorCacheRead = qualifiedPeers.reduce((sum, peer) => sum + peer.cacheReadInputTokens, 0);
+          let comparisonNote: string | null = null;
+          if (cell.providerId === "unknown") {
+            comparisonNote = "provider is unknown";
+          } else if (inputShare == null || inputShare < MIN_COMPARABLE_PROVIDER_SHARE) {
+            comparisonNote = "below 5% of harness input";
+          } else if (cell.processedInputTokens < MIN_COMPARABLE_PROVIDER_INPUT_TOKENS) {
+            comparisonNote = "less than 1M input tokens";
+          } else if (qualifiedPeers.length === 0) {
+            comparisonNote = "no peer with at least 1M input and a 20×-balanced sample";
+          }
+          const otherHarnessRate = comparisonNote == null && comparatorInputTokens > 0
+            ? comparatorCacheRead / comparatorInputTokens
+            : null;
+          return {
+            providerId: cell.providerId,
+            display: displayFor(cell.providerId),
+            processedInputTokens: cell.processedInputTokens,
+            cacheReadInputTokens: cell.cacheReadInputTokens,
+            observedRate,
+            inputShare,
+            otherHarnessRate,
+            comparatorInputTokens,
+            comparisonNote,
+            lift: observedRate != null && otherHarnessRate != null ? observedRate - otherHarnessRate : null,
+          };
+        })
+        .sort((a, b) => b.processedInputTokens - a.processedInputTokens);
+
+      const comparable = providers.filter((provider) => provider.otherHarnessRate != null);
+      const comparableInput = comparable.reduce((sum, provider) => sum + provider.processedInputTokens, 0);
+      const comparableCacheRead = comparable.reduce((sum, provider) => sum + provider.cacheReadInputTokens, 0);
+      const expectedCacheRead = comparable.reduce(
+        (sum, provider) => sum + provider.processedInputTokens * provider.otherHarnessRate!,
+        0,
+      );
+      const comparableObservedRate = comparableInput > 0 ? comparableCacheRead / comparableInput : null;
+      const providerExpectedRate = comparableInput > 0 ? expectedCacheRead / comparableInput : null;
+
+      return {
+        harness: harness as CacheAttributionResponse["harnesses"][number]["harness"],
+        processedInputTokens,
+        cacheReadInputTokens,
+        observedRate: processedInputTokens > 0 ? cacheReadInputTokens / processedInputTokens : null,
+        comparableObservedRate,
+        providerExpectedRate,
+        adjustedLift: comparableObservedRate != null && providerExpectedRate != null
+          ? comparableObservedRate - providerExpectedRate
+          : null,
+        comparisonCoverage: processedInputTokens > 0 ? comparableInput / processedInputTokens : null,
+        providers,
+      };
+    }).sort((a, b) => b.processedInputTokens - a.processedInputTokens);
+
+    return { filters, harnesses };
+  }
+
   events(filters: RangeFilters, cursor: string | null, pageSize: number): EventsPage {
     const size = Math.min(Math.max(1, pageSize || EVENT_PAGE_SIZE_DEFAULT), EVENT_PAGE_SIZE_MAX);
-    const { sql, params } = buildWhere(filters);
+    const { sql, params } = buildWhere(this.db, filters);
 
     const cursorClause: string[] = [];
     const cursorParams: any[] = [];
@@ -193,8 +428,8 @@ export class Analytics {
     return { items, nextCursor, total: totalRow?.c ?? 0 };
   }
 
-  dimensions(): DimensionLists {
-    const providers = this.db
+  dimensions(providerAliases: Array<{ raw: string; display: string }> = []): DimensionLists {
+    const rawProviders = this.db
       .prepare(
         `SELECT canonical_provider_id AS id, MAX(raw_provider_id) AS rawProviderId,
                 canonical_provider_id AS canonical, COUNT(*) AS eventCount
@@ -202,14 +437,73 @@ export class Analytics {
          GROUP BY canonical_provider_id ORDER BY eventCount DESC`,
       )
       .all() as any[];
-    const models = this.db
+
+    const displayFor = providerDisplayNameFactory(this.db, providerAliases);
+
+    const providerMap = new Map<string, { id: string; rawProviderId: string | null; eventCount: number }>();
+    for (const p of rawProviders) {
+      const canonicalId = canonicalizeProviderId(p.id) ?? p.id;
+      const existing = providerMap.get(canonicalId);
+      if (!existing) {
+        providerMap.set(canonicalId, {
+          id: canonicalId,
+          rawProviderId: p.rawProviderId ?? null,
+          eventCount: p.eventCount ?? 0,
+        });
+      } else {
+        existing.eventCount += (p.eventCount ?? 0);
+        if (p.rawProviderId && (!existing.rawProviderId || p.rawProviderId.toLowerCase() === canonicalId)) {
+          existing.rawProviderId = p.rawProviderId;
+        }
+      }
+    }
+
+    const providers = Array.from(providerMap.values())
+      .sort((a, b) => b.eventCount - a.eventCount)
+      .map((p) => ({
+        id: p.id,
+        rawProviderId: p.rawProviderId,
+        display: displayFor(p.id),
+        eventCount: p.eventCount,
+      }));
+
+    // Merge stored model spellings that canonicalize to the same id at read
+    // time (e.g. `gpt-5.6-luna` and `openai/gpt-5.6-luna`) so the filter UI
+    // offers one canonical choice instead of misleading duplicates.
+    const modelMap = new Map<string, { id: string; canonicalModelId: string | null; display: string | null; owner: string | null; eventCount: number; totalTokens: number }>();
+    const rawModels = this.db
       .prepare(
         `SELECT m.id, m.canonical_model_id AS canonicalModelId, m.display,
-                m.owner, COUNT(e.id) AS eventCount
+                m.owner, COUNT(e.id) AS eventCount,
+                COALESCE(SUM(e.processed_tokens), 0) AS totalTokens
          FROM models m LEFT JOIN usage_events e ON e.canonical_model_id = m.id
-         GROUP BY m.id ORDER BY eventCount DESC`,
+         GROUP BY m.id`,
       )
       .all() as any[];
+    for (const m of rawModels) {
+      const canonicalId = mergedModelId(m.id);
+      const existing = modelMap.get(canonicalId);
+      if (!existing) {
+        modelMap.set(canonicalId, {
+          id: canonicalId,
+          canonicalModelId: canonicalId === "unknown" ? null : canonicalId,
+          display: m.display ?? m.canonicalModelId,
+          owner: m.owner ?? null,
+          eventCount: m.eventCount ?? 0,
+          totalTokens: m.totalTokens ?? 0,
+        });
+      } else {
+        existing.eventCount += m.eventCount ?? 0;
+        existing.totalTokens += m.totalTokens ?? 0;
+        if (!existing.display || existing.display === canonicalId) {
+          existing.display = m.display ?? m.canonicalModelId ?? existing.display;
+        }
+        if (!existing.owner && m.owner) existing.owner = m.owner;
+      }
+    }
+    const models = Array.from(modelMap.values()).sort(
+      (a, b) => b.totalTokens - a.totalTokens || b.eventCount - a.eventCount,
+    );
     const projects = this.db
       .prepare(
         `SELECT p.id, p.display_path AS path, COUNT(e.id) AS eventCount
@@ -223,18 +517,13 @@ export class Analytics {
 
     return {
       harnesses,
-      providers: providers.map((p) => ({
-        id: p.id,
-        rawProviderId: p.rawProviderId,
-        display: p.canonical ?? p.id,
-        eventCount: p.eventCount ?? 0,
-      })),
+      providers,
       models: models.map((m) => ({
         id: m.id,
         canonicalModelId: m.canonicalModelId,
-        display: m.display ?? m.canonicalModelId,
-        owner: m.owner ?? null,
-        eventCount: m.eventCount ?? 0,
+        display: m.display ?? m.canonicalModelId ?? m.id,
+        owner: m.owner,
+        eventCount: m.eventCount,
       })),
       projects: projects.map((p) => ({ id: p.id, path: p.path, eventCount: p.eventCount ?? 0 })),
     };
@@ -246,7 +535,7 @@ export class Analytics {
    * Buckets fill the full range (inclusive of empty days) for stable charting.
    */
   timeseries(filters: RangeFilters, metric: TimeseriesMetric, groupBy: TimeseriesGroupBy = "provider", timezone = "Europe/Berlin"): TimeseriesResponse {
-    const { sql, params } = buildWhere(filters);
+    const { sql, params } = buildWhere(this.db, filters);
     const dimension = groupBy === "harness" ? "e.harness" : "COALESCE(e.canonical_provider_id, 'unknown')";
     const rows = this.db
       .prepare(
@@ -262,12 +551,17 @@ export class Analytics {
     let minDate: string | null = null;
     let maxDate: string | null = null;
     const acc = new Map<string, number>(); // `${date}|${provider}` -> value
+    const seriesKeys = new Set<string>();
 
     for (const r of rows) {
       const day = formatInTimeZone(r.occurred_at, timezone, "yyyy-MM-dd");
       if (minDate === null || day < minDate) minDate = day;
       if (maxDate === null || day > maxDate) maxDate = day;
-      const key = `${day}|${r.provider}`;
+      const series = groupBy === "harness"
+        ? r.provider
+        : (r.provider === "unknown" ? "unknown" : (canonicalizeProviderId(r.provider) ?? r.provider));
+      seriesKeys.add(series);
+      const key = `${day}|${series}`;
       acc.set(key, (acc.get(key) ?? 0) + rowMetric(r, metric));
     }
 
@@ -279,7 +573,7 @@ export class Analytics {
     const start = fromDay ?? toDay ?? fallback;
     const end = toDay ?? fromDay ?? fallback;
     const buckets = fillDays(start, end);
-    const providers = Array.from(new Set(rows.map((r) => r.provider))).sort();
+    const providers = Array.from(seriesKeys).sort();
 
     const points: TimeseriesPoint[] = [];
     for (const date of buckets) {
@@ -291,6 +585,145 @@ export class Analytics {
 
     return { metric, groupBy, buckets, providers, points };
   }
+
+  modelsBreakdown(filters: RangeFilters): ModelsBreakdownResponse {
+    const { sql, params } = buildWhere(this.db, filters);
+    const rows = this.db
+      .prepare(
+        `SELECT
+           COALESCE(e.canonical_model_id, 'unknown') AS modelId,
+           MAX(e.raw_model_id) AS rawModelId,
+           COALESCE(SUM(e.processed_tokens), 0) AS processedTokens,
+           COALESCE(SUM(e.processed_input_tokens), 0) AS processedInputTokens,
+           COALESCE(SUM(e.fresh_input_tokens), 0) AS freshInputTokens,
+           COALESCE(SUM(e.cache_read_input_tokens), 0) AS cacheReadInputTokens,
+           COALESCE(SUM(e.output_tokens), 0) AS outputTokens,
+           COALESCE(SUM(CASE WHEN e.cost_available THEN e.cost_nano_usd ELSE 0 END), 0) AS costNano
+         FROM usage_events e ${sql}
+         GROUP BY COALESCE(e.canonical_model_id, 'unknown')
+         HAVING SUM(e.processed_tokens) > 0
+         ORDER BY processedTokens DESC`,
+      )
+      .all(...params) as any[];
+
+    const modelMeta = new Map<string, { display: string | null; owner: string | null; canonicalModelId: string | null }>();
+    try {
+      const storedModels = this.db
+        .prepare(`SELECT id, canonical_model_id AS canonicalModelId, display, owner FROM models`)
+        .all() as any[];
+      for (const m of storedModels) {
+        modelMeta.set(m.id, { display: m.display, owner: m.owner, canonicalModelId: m.canonicalModelId });
+      }
+    } catch {
+    }
+
+    interface MergedModel {
+      id: string;
+      canonicalModelId: string | null;
+      rawModelId: string | null;
+      display: string;
+      owner: string | null;
+      processedTokens: number;
+      processedInputTokens: number;
+      freshInputTokens: number;
+      cacheReadInputTokens: number;
+      outputTokens: number;
+      costNano: number;
+      sessions: number;
+    }
+
+    const modelMap = new Map<string, MergedModel>();
+
+    for (const r of rows) {
+      const meta = modelMeta.get(r.modelId);
+      const canonicalId = mergedModelId(r.modelId);
+      const existing = modelMap.get(canonicalId);
+      const owner = meta?.owner ?? modelOwner(canonicalId) ?? null;
+      const display = meta?.display ?? modelDisplay(r.rawModelId, canonicalId);
+
+      if (!existing) {
+        modelMap.set(canonicalId, {
+          id: canonicalId,
+          canonicalModelId: canonicalId === "unknown" ? null : canonicalId,
+          rawModelId: r.rawModelId ?? null,
+          display,
+          owner,
+          processedTokens: r.processedTokens,
+          processedInputTokens: r.processedInputTokens,
+          freshInputTokens: r.freshInputTokens,
+          cacheReadInputTokens: r.cacheReadInputTokens,
+          outputTokens: r.outputTokens,
+          costNano: r.costNano,
+          sessions: 0,
+        });
+      } else {
+        existing.processedTokens += r.processedTokens;
+        existing.processedInputTokens += r.processedInputTokens;
+        existing.freshInputTokens += r.freshInputTokens;
+        existing.cacheReadInputTokens += r.cacheReadInputTokens;
+        existing.outputTokens += r.outputTokens;
+        existing.costNano += r.costNano;
+        if (!existing.rawModelId && r.rawModelId) existing.rawModelId = r.rawModelId;
+      }
+    }
+
+    // Sessions are not additive across merged spellings: a session that used
+    // both `gpt-5.6-luna` and `openai/gpt-5.6-luna` would be counted twice if
+    // we summed the per-stored-id distinct counts. Collect distinct
+    // (stored id, session) pairs instead and dedupe per merged canonical id.
+    const sessionsByModel = new Map<string, Set<string>>();
+    const sessionPairs = this.db
+      .prepare(
+        `SELECT COALESCE(e.canonical_model_id, 'unknown') AS modelId, e.session_id AS sessionId
+         FROM usage_events e ${sql}
+         GROUP BY COALESCE(e.canonical_model_id, 'unknown'), e.session_id`,
+      )
+      .all(...params) as Array<{ modelId: string; sessionId: string | null }>;
+    for (const pair of sessionPairs) {
+      if (pair.sessionId == null) continue;
+      const key = mergedModelId(pair.modelId);
+      const sessions = sessionsByModel.get(key) ?? new Set<string>();
+      sessions.add(pair.sessionId);
+      sessionsByModel.set(key, sessions);
+    }
+    for (const m of modelMap.values()) {
+      m.sessions = sessionsByModel.get(m.id)?.size ?? 0;
+    }
+
+    const models: ModelBreakdownItem[] = Array.from(modelMap.values())
+      .sort((a, b) => b.processedTokens - a.processedTokens)
+      .map((m) => {
+        const processedInput = m.processedInputTokens;
+        const cacheHitRate = processedInput > 0 ? m.cacheReadInputTokens / processedInput : null;
+        return {
+          id: m.id,
+          canonicalModelId: m.canonicalModelId,
+          rawModelId: m.rawModelId,
+          display: m.display,
+          owner: m.owner,
+          processedTokens: m.processedTokens,
+          processedInputTokens: m.processedInputTokens,
+          freshInputTokens: m.freshInputTokens,
+          cacheReadInputTokens: m.cacheReadInputTokens,
+          outputTokens: m.outputTokens,
+          costUsd: nanoToUsd(m.costNano) ?? 0,
+          sessions: m.sessions,
+          cacheHitRate,
+        };
+      });
+
+    return {
+      range: { from: filters.from ?? null, to: filters.to ?? null },
+      filters,
+      models,
+    };
+  }
+}
+
+/** Merge key for a stored canonical model id at read time. */
+function mergedModelId(storedModelId: string): string {
+  if (storedModelId === "unknown") return "unknown";
+  return canonicalizeModelId(storedModelId) ?? storedModelId;
 }
 
 function rowMetric(r: any, metric: TimeseriesMetric): number {
@@ -337,10 +770,17 @@ function rowToEvent(r: any): NormalizedUsageEvent {
     turnId: r.turn_id,
     requestId: r.request_id,
     rawProviderId: r.raw_provider_id,
-    canonicalProviderId: r.canonical_provider_id,
+    // Read-time canonicalization: rows stored before a routing change keep
+    // stale ids (e.g. `glm`, `zai-coding-plan`), so events must surface the
+    // same canonical ids that filtering and aggregation use.
+    canonicalProviderId: r.canonical_provider_id == null
+      ? null
+      : (canonicalizeProviderId(r.canonical_provider_id) ?? r.canonical_provider_id),
     providerResolution: r.provider_resolution,
     rawModelId: r.raw_model_id,
-    canonicalModelId: r.canonical_model_id,
+    canonicalModelId: r.canonical_model_id == null
+      ? null
+      : (canonicalizeModelId(r.canonical_model_id) ?? r.canonical_model_id),
     processedInputTokens: r.processed_input_tokens,
     freshInputTokens: r.fresh_input_tokens,
     cacheReadInputTokens: r.cache_read_input_tokens,
