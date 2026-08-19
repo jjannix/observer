@@ -1,9 +1,10 @@
-import { useMemo, useState } from "react";
+import { useMemo, useState, type CSSProperties } from "react";
 import { useQueries, useQuery } from "@tanstack/react-query";
 import type { NormalizedUsageEvent, SummaryTotals } from "@shared/contracts";
 import { api, rangeToFilters } from "../api.js";
 import { FiltersBar, useFilterState } from "../components/Filters.js";
 import { MultiLineChart } from "../components/Chart.js";
+import { colorForHarness } from "../components/colors.js";
 import { COLORS, CompositionBar, fmtCompact, fmtCompactPrecise, fmtInt, fmtPct, fmtUsd } from "../components/ui.js";
 
 export function Analysis() {
@@ -89,6 +90,7 @@ export function Analysis() {
   const modelRows = modelCandidates
     .map((model, index) => ({ model, totals: modelSummaries[index]?.data?.totals }))
     .filter(({ totals: row }) => row == null || row.processedTokens > 0)
+    .sort((a, b) => (b.totals?.processedTokens ?? 0) - (a.totals?.processedTokens ?? 0))
     .slice(0, 8);
 
   return (
@@ -140,13 +142,15 @@ export function Analysis() {
       </section>
 
       <section className="instrument-section harness-section">
-        <div className="section-head"><div><h2>Usage by harness</h2><span className="hint">Compare the coding agents behind your observations</span></div></div>
+        <div className="section-head"><div><h2>Usage by harness</h2><span className="hint">Compare volume, composition, and activity across coding agents</span></div></div>
         <div className={`dimension-comparison-layout${harnessDetailsOpen ? "" : " is-collapsed"}`}>
           <ComparisonSidebar dimension="harness" open={harnessDetailsOpen} onToggle={() => setHarnessDetailsOpen((open) => !open)} rows={harnessRows} total={totals?.processedTokens ?? 0} empty="No harness observations in this period." />
           <div className="dimension-chart">
-            {harnessChart ? <MultiLineChart buckets={harnessChart.buckets} providers={harnessChart.providers} points={harnessChart.points} formatValue={fmtCompact} ariaLabel="Harness usage comparison over time" /> : <div className="skeleton chart-skeleton" />}
+            {harnessChart ? <MultiLineChart buckets={harnessChart.buckets} providers={harnessChart.providers} points={harnessChart.points} formatValue={fmtCompact} ariaLabel="Harness usage comparison over time" seriesColor={colorForHarness} fillAreas /> : <div className="skeleton chart-skeleton" />}
           </div>
         </div>
+        <div className="harness-metrics-head"><h3>Comparison metrics</h3><span>Best value for each metric is highlighted</span></div>
+        <HarnessMetricMatrix rows={harnessRows} total={totals?.processedTokens ?? 0} />
       </section>
 
       <section className="instrument-section models-section">
@@ -209,6 +213,99 @@ function harnessLabel(value: string): string { return ({ codex: "Codex", pi: "Pi
 function shortId(value: string): string { const parts = value.replace(/\\/g, "/").split("/").filter(Boolean); return parts.at(-1) ?? value; }
 function projectLabel(projectId: string, projects: Array<{ id: string; path: string }> | undefined): string { const resolved = projects?.find((project) => project.id === projectId); return shortId(resolved?.path ?? projectId); }
 function Readout({ value, label, detail }: { value: string; label: string; detail: string }) { return <div className="readout"><div className="readout-value">{value}</div><div className="readout-label">{label}</div><div className="readout-detail">{detail}</div></div>; }
+function HarnessMetricMatrix({ rows, total }: { rows: Array<{ id: string; label: string; totals: SummaryTotals | undefined }>; total: number }) {
+  const [activeHarness, setActiveHarness] = useState<string | null>(null);
+  const metrics: Array<{
+    label: string;
+    primary?: boolean;
+    direction: "max" | "min";
+    bestLabel: string;
+    score: (row: SummaryTotals | undefined) => number | null;
+    value: (row: SummaryTotals | undefined) => string;
+    detail?: (row: SummaryTotals | undefined) => string;
+  }> = [
+    {
+      label: "Processed tokens",
+      primary: true,
+      direction: "max",
+      bestLabel: "Highest processed volume",
+      score: (row) => row?.processedTokens ?? null,
+      value: (row) => fmtCompactPrecise(row?.processedTokens),
+      detail: (row) => `${fmtPct(total > 0 ? (row?.processedTokens ?? 0) / total : null)} of selected usage`,
+    },
+    {
+      label: "Uncached input",
+      direction: "min",
+      bestLabel: "Lowest uncached input",
+      score: (row) => row?.freshInputTokens ?? null,
+      value: (row) => fmtCompactPrecise(row?.freshInputTokens),
+      detail: (row) => `${fmtPct(row?.processedInputTokens ? row.freshInputTokens / row.processedInputTokens : null)} of input`,
+    },
+    {
+      label: "Cached input",
+      direction: "max",
+      bestLabel: "Most cached input",
+      score: (row) => row?.cacheReadInputTokens ?? null,
+      value: (row) => fmtCompactPrecise(row?.cacheReadInputTokens),
+    },
+    {
+      label: "Cache hit rate",
+      direction: "max",
+      bestLabel: "Highest cache hit rate",
+      score: (row) => row?.cacheHitRate ?? null,
+      value: (row) => fmtPct(row?.cacheHitRate),
+      detail: () => "of processed input",
+    },
+    {
+      label: "Output",
+      direction: "max",
+      bestLabel: "Most output",
+      score: (row) => row?.outputTokens ?? null,
+      value: (row) => fmtCompactPrecise(row?.outputTokens),
+      detail: (row) => `${fmtPct(row?.outputInputRatio)} of input`,
+    },
+    {
+      label: "Estimated cost",
+      direction: "min",
+      bestLabel: "Lowest covered estimated cost",
+      score: (row) => row && (row.costCoverage ?? 0) >= .5 ? row.costUsd : null,
+      value: (row) => (row?.costCoverage ?? 0) > 0 ? fmtUsd(row?.costUsd) : "—",
+      detail: (row) => (row?.costCoverage ?? 0) > 0 ? `${fmtPct(row?.costCoverage)} covered` : "cost unavailable",
+    },
+    { label: "Requests", direction: "max", bestLabel: "Most requests", score: (row) => row?.requests ?? null, value: (row) => fmtInt(row?.requests) },
+    { label: "Sessions", direction: "max", bestLabel: "Most sessions", score: (row) => row?.sessions ?? null, value: (row) => fmtInt(row?.sessions) },
+  ];
+
+  if (rows.length === 0) return <div className="empty harness-metric-empty">No harness observations in this period.</div>;
+
+  return <div className="harness-metric-scroll" onMouseLeave={() => setActiveHarness(null)}>
+    <table className={`harness-metric-matrix${activeHarness ? " has-active-column" : ""}`} style={{ minWidth: `${164 + rows.length * 205}px` }}>
+      <caption className="sr-only">Usage metrics separated by harness</caption>
+      <thead><tr><th scope="col">Metric</th>{rows.map((row) => <th scope="col" key={row.id} className={activeHarness === row.id ? "is-active-column" : ""} onMouseEnter={() => setActiveHarness(row.id)}><span><i className="series-dot" style={{ background: colorForHarness(row.label) }} />{row.label}</span></th>)}</tr></thead>
+      <tbody>{metrics.map((metric) => {
+        const scoredRows = rows.map((row) => ({ id: row.id, score: metric.score(row.totals) })).filter((row): row is { id: string; score: number } => row.score != null && Number.isFinite(row.score));
+        const bestScore = scoredRows.length > 1 ? (metric.direction === "max" ? Math.max(...scoredRows.map((row) => row.score)) : Math.min(...scoredRows.map((row) => row.score))) : null;
+        return <tr key={metric.label} className={metric.primary ? "primary" : ""}>
+          <th scope="row">{metric.label}</th>
+          {rows.map((row) => {
+            const isBest = bestScore != null && metric.score(row.totals) === bestScore;
+            const color = colorForHarness(row.label);
+            return <td
+              key={row.id}
+              className={`${isBest ? "is-best " : ""}${activeHarness === row.id ? "is-active-column" : ""}`.trim()}
+              style={{ "--harness-color": color } as CSSProperties}
+              title={isBest ? `${metric.bestLabel}: ${row.label}` : undefined}
+              onMouseEnter={() => setActiveHarness(row.id)}
+            >
+              <strong>{metric.value(row.totals)}</strong>
+              {metric.detail && <small>{metric.detail(row.totals)}</small>}
+            </td>;
+          })}
+        </tr>;
+      })}</tbody>
+    </table>
+  </div>;
+}
 function ComparisonSidebar({ dimension, open, onToggle, rows, total, empty }: { dimension: "provider" | "harness"; open: boolean; onToggle: () => void; rows: Array<{ id: string; label: string; totals: SummaryTotals | undefined }>; total: number; empty: string }) {
   const label = `${open ? "Collapse" : "Expand"} ${dimension} sidebar`;
   return <aside className={`dimension-sidebar${open ? "" : " is-collapsed"}`} aria-label={`${dimension} breakdown`}>

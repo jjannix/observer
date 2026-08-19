@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useId, useMemo, useState } from "react";
 
 export interface ChartPoint {
   date: string;
@@ -13,6 +13,8 @@ interface Props {
   formatValue: (value: number) => string;
   height?: number;
   ariaLabel?: string;
+  seriesColor?: (series: string, index: number) => string;
+  fillAreas?: boolean;
 }
 
 export function SignalChart({ buckets, providers, points, formatValue, height = 410 }: Props) {
@@ -111,8 +113,9 @@ export function SignalChart({ buckets, providers, points, formatValue, height = 
   );
 }
 
-export function MultiLineChart({ buckets, providers, points, formatValue, height = 330, ariaLabel = "Usage comparison over time" }: Props) {
+export function MultiLineChart({ buckets, providers, points, formatValue, height = 330, ariaLabel = "Usage comparison over time", seriesColor, fillAreas = false }: Props) {
   const [hover, setHover] = useState<number | null>(null);
+  const gradientPrefix = useId().replace(/:/g, "");
   const [hoveredProvider, setHoveredProvider] = useState<string | null>(null);
   const [selectedProvider, setSelectedProvider] = useState<string | null>(null);
   const width = 1200;
@@ -156,7 +159,7 @@ export function MultiLineChart({ buckets, providers, points, formatValue, height
             onBlur={() => setHoveredProvider(null)}
             onClick={() => setSelectedProvider((current) => current === provider ? null : provider)}
           >
-            <i className={`series-key series-${index}`} />{provider}
+            <i className={`series-key series-${index}`} style={seriesColor ? { background: seriesColor(provider, index) } : undefined} />{provider}
           </button>
         ))}
       </div>
@@ -180,18 +183,34 @@ export function MultiLineChart({ buckets, providers, points, formatValue, height
           setHoveredProvider(nearestProvider);
         }}
       >
+        {fillAreas && <defs>
+          {ordered.map((provider, index) => {
+            const color = seriesColor?.(provider, index) ?? ["#8498bb", "#a2a2a2", "#6a6a6a", "#454545"][index];
+            return <linearGradient id={`${gradientPrefix}-area-${index}`} key={provider} x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor={color} stopOpacity="0.24" />
+              <stop offset="68%" stopColor={color} stopOpacity="0.08" />
+              <stop offset="100%" stopColor={color} stopOpacity="0.01" />
+            </linearGradient>;
+          })}
+        </defs>}
         <g className="grid">{ticks.map((tick) => <line key={tick} x1={padL} x2={width - padR} y1={y(tick)} y2={y(tick)} />)}</g>
         <g className="axis">
           {ticks.map((tick) => <text key={tick} x={padL - 10} y={y(tick) + 4} textAnchor="end">{formatValue(tick)}</text>)}
           {buckets.map((date, index) => index % labelStep === 0 || index === buckets.length - 1 ? <text key={date} x={x(index)} y={height - 5} textAnchor="middle">{fmtDay(date)}</text> : null)}
         </g>
-        {values.map((series, index) => <path key={ordered[index]} className={`comparison-signal series-${index}${focusedProvider === ordered[index] ? " focused" : focusedProvider ? " subdued" : ""}`} d={smoothLinePath(series.map((value, pointIndex) => [x(pointIndex), y(value)]))} vectorEffect="non-scaling-stroke" />)}
+        {fillAreas && values.map((series, index) => {
+          const linePoints = series.map((value, pointIndex) => [x(pointIndex), y(value)] as [number, number]);
+          const baseline = padT + plotH;
+          const areaPath = `${smoothLinePath(linePoints)} L${linePoints.at(-1)?.[0].toFixed(1)},${baseline.toFixed(1)} L${linePoints[0][0].toFixed(1)},${baseline.toFixed(1)} Z`;
+          return <path key={`${ordered[index]}-area`} className={`comparison-area${focusedProvider === ordered[index] ? " focused" : focusedProvider ? " subdued" : ""}`} d={areaPath} fill={`url(#${gradientPrefix}-area-${index})`} />;
+        })}
+        {values.map((series, index) => <path key={ordered[index]} className={`comparison-signal series-${index}${focusedProvider === ordered[index] ? " focused" : focusedProvider ? " subdued" : ""}`} style={seriesColor ? { stroke: seriesColor(ordered[index], index) } : undefined} d={smoothLinePath(series.map((value, pointIndex) => [x(pointIndex), y(value)]))} vectorEffect="non-scaling-stroke" />)}
         {hover != null && <g className="crosshair"><line x1={x(hover)} x2={x(hover)} y1={padT} y2={padT + plotH} /></g>}
       </svg>
       {hover != null && (
         <div className="tip comparison-tip" style={{ left: `${(x(hover) / width) * 100}%`, top: 48, transform: hover > buckets.length * 0.7 ? "translateX(-100%)" : "translateX(10px)" }}>
           <div className="t-date">{fmtFullDay(buckets[hover])}</div>
-          {ordered.map((provider, index) => <div key={provider} className={`t-row${focusedProvider === provider ? " focused" : ""}`}><span>{provider}</span><span>{formatValue(values[index][hover])}</span></div>)}
+          {ordered.map((provider, index) => <div key={provider} className={`t-row${focusedProvider === provider ? " focused" : ""}`}><span className="t-series-label">{seriesColor && <i style={{ background: seriesColor(provider, index) }} />}{provider}</span><span>{formatValue(values[index][hover])}</span></div>)}
         </div>
       )}
     </div>

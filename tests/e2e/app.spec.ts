@@ -17,6 +17,14 @@ test.describe("Observer UI", () => {
     await cachedSegment.hover();
     await expect(cachedLegend).toHaveClass(/is-active/);
 
+    const totalGrouping = page.getByRole("button", { name: "Total", exact: true });
+    const harnessGrouping = page.getByRole("button", { name: "Harnesses", exact: true });
+    await expect(totalGrouping).toHaveAttribute("aria-pressed", "true");
+    await harnessGrouping.click();
+    await expect(harnessGrouping).toHaveAttribute("aria-pressed", "true");
+    await expect(page.getByText(/Daily harness comparison/)).toBeVisible();
+    await expect(page.locator(".usage-section .comparison-area").first()).toBeVisible();
+
     await expect(page.getByRole("button", { name: /sync now/i }).first()).toBeVisible();
   });
 
@@ -28,15 +36,17 @@ test.describe("Observer UI", () => {
     const sevenDays = page.getByRole("button", { name: "7D", exact: true });
 
     await sevenDays.click();
-    await page.getByLabel("Chart metric").selectOption("costUsd");
+    await page.getByLabel("Chart metric").click();
+    await page.getByRole("option", { name: "Cost (USD)" }).click();
     await page.getByRole("button", { name: /^Filter/ }).click();
-    await page.getByRole("button", { name: /^Harness/ }).click();
+    const filterDialog = page.getByRole("dialog", { name: "Observation filters" });
+    await filterDialog.getByRole("button", { name: /^Harness/ }).click();
     await page.getByRole("checkbox", { name: "codex" }).check();
     await expect(sevenDays).toHaveClass(/active/);
     await page.reload();
 
     await expect(page.getByRole("button", { name: "7D", exact: true })).toHaveClass(/active/);
-    await expect(page.getByLabel("Chart metric")).toHaveValue("costUsd");
+    await expect(page.getByLabel("Chart metric")).toHaveText("Cost (USD)");
     await expect(page.getByRole("button", { name: "Clear codex" })).toBeVisible();
   });
 
@@ -68,6 +78,16 @@ test.describe("Observer UI", () => {
     await harnessToggle.click();
     await expect(page.getByRole("button", { name: "Expand harness sidebar" })).toHaveAttribute("aria-expanded", "false");
     await expect(page.locator("#harness-breakdown")).toBeHidden();
+
+    const harnessMetrics = page.locator(".harness-metric-matrix");
+    await expect(harnessMetrics).toBeVisible();
+    await expect(harnessMetrics.getByText("Processed tokens", { exact: true })).toBeVisible();
+    await expect(harnessMetrics.getByText("Cache hit rate", { exact: true })).toBeVisible();
+    const leadingCell = harnessMetrics.locator("td.is-best").first();
+    await expect(leadingCell).toBeVisible();
+    await leadingCell.hover();
+    await expect(leadingCell).toHaveClass(/is-active-column/);
+    await expect(page.getByText("Comparison metrics", { exact: true })).toBeVisible();
   });
 
   test("settings route shows config file location and actions", async ({ page }) => {

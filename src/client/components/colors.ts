@@ -20,6 +20,23 @@ const PALETTE = [
 
 const assigned = new Map<string, string>();
 
+/** Brand-inspired harness colors, tuned to remain legible on Observer's black canvas. */
+export const HARNESS_COLORS = {
+  pi: "#8B7CF6",
+  codex: "#60A5FA",
+  opencode: "#F2F2F2",
+  "claude-code": "#D97757",
+} as const;
+
+export function colorForHarness(harness: string): string {
+  const normalized = harness.trim().toLowerCase();
+  if (normalized === "pi") return HARNESS_COLORS.pi;
+  if (normalized === "codex") return HARNESS_COLORS.codex;
+  if (normalized === "opencode" || normalized === "open code") return HARNESS_COLORS.opencode;
+  if (normalized === "claude-code" || normalized === "claude code") return HARNESS_COLORS["claude-code"];
+  return "#A2A2A2";
+}
+
 export function colorFor(provider: string): string {
   const existing = assigned.get(provider);
   if (existing) return existing;
