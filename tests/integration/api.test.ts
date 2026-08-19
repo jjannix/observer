@@ -286,6 +286,65 @@ describe("HTTP API", () => {
     expect(summary.totals.processedTokens).toBe(600);
   });
 
+  it("events expose canonicalized provider and model ids for stale rows", async () => {
+    const insert = state.raw.prepare(
+      `INSERT INTO usage_events
+       (id, harness, occurred_at, logical_session_id, request_id, raw_provider_id, canonical_provider_id,
+        provider_resolution, raw_model_id, canonical_model_id,
+        processed_input_tokens, fresh_input_tokens, cache_read_input_tokens, processed_tokens)
+       VALUES (?, 'pi', '2025-01-01T00:00:00Z', ?, ?, ?, ?, 'source', ?, ?, ?, ?, ?, ?)`,
+    );
+
+    // Rows stored before the zai/openai routing changes keep stale ids.
+    insert.run("ev1", "s1", "r1", "glm", "glm", "gpt-5.6-luna", "gpt-5.6-luna", 100, 100, 0, 100);
+    insert.run("ev2", "s2", "r2", "zai-coding-plan", "zai-coding-plan", "gpt-5.6-luna", "openai/gpt-5.6-luna", 100, 100, 0, 100);
+
+    // Filtering by the canonical provider matches both rows...
+    const res = await app.inject({ method: "GET", url: "/api/v1/events?provider=zai" });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.items).toHaveLength(2);
+    // ...and every row reports the canonical ids, never the stale spellings.
+    for (const item of body.items) {
+      expect(item.canonicalProviderId).toBe("zai");
+      expect(item.canonicalModelId).toBe("openai/gpt-5.6-luna");
+    }
+    expect(body.items.map((item: any) => item.rawProviderId).sort()).toEqual(["glm", "zai-coding-plan"]);
+  });
+
+  it("models-breakdown counts sessions once when legacy model ids merge", async () => {
+    const insertSession = state.raw.prepare(
+      `INSERT INTO sessions (id, harness, logical_session_id, first_seen, last_seen)
+       VALUES (?, 'pi', ?, '2025-01-01T00:00:00Z', '2025-01-01T00:00:00Z')`,
+    );
+    insertSession.run("pi:s1", "s1");
+    insertSession.run("pi:s2", "s2");
+
+    const insert = state.raw.prepare(
+      `INSERT INTO usage_events
+       (id, harness, occurred_at, session_id, logical_session_id, request_id,
+        raw_model_id, canonical_model_id,
+        processed_input_tokens, fresh_input_tokens, cache_read_input_tokens, processed_tokens)
+       VALUES (?, 'pi', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    );
+
+    // Session s1 seen under both a legacy and the canonical model id.
+    insert.run("mb1", "2025-01-01T00:00:00Z", "pi:s1", "s1", "r1", "gpt-5.6-luna", "gpt-5.6-luna", 100, 100, 0, 100);
+    insert.run("mb2", "2025-01-01T01:00:00Z", "pi:s1", "s1", "r2", "gpt-5.6-luna", "openai/gpt-5.6-luna", 100, 100, 0, 100);
+    // A distinct session on the canonical id alone.
+    insert.run("mb3", "2025-01-01T02:00:00Z", "pi:s2", "s2", "r3", "gpt-5.6-luna", "openai/gpt-5.6-luna", 100, 100, 0, 100);
+
+    const res = await app.inject({ method: "GET", url: "/api/v1/models-breakdown" });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    const merged = body.models.find((m: any) => m.id === "openai/gpt-5.6-luna");
+    expect(merged).toBeDefined();
+    expect(merged.processedTokens).toBe(300);
+    // Token totals are additive, but s1 must only count once despite the two
+    // stored spellings (a summed count would report 3).
+    expect(merged.sessions).toBe(2);
+  });
+
   it("models-breakdown returns range-filtered models ranked by token volume", async () => {
     const insert = state.raw.prepare(
       `INSERT INTO usage_events

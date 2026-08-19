@@ -539,8 +539,7 @@ export class Analytics {
            COALESCE(SUM(e.fresh_input_tokens), 0) AS freshInputTokens,
            COALESCE(SUM(e.cache_read_input_tokens), 0) AS cacheReadInputTokens,
            COALESCE(SUM(e.output_tokens), 0) AS outputTokens,
-           COALESCE(SUM(CASE WHEN e.cost_available THEN e.cost_nano_usd ELSE 0 END), 0) AS costNano,
-           COUNT(DISTINCT e.session_id) AS sessions
+           COALESCE(SUM(CASE WHEN e.cost_available THEN e.cost_nano_usd ELSE 0 END), 0) AS costNano
          FROM usage_events e ${sql}
          GROUP BY COALESCE(e.canonical_model_id, 'unknown')
          HAVING SUM(e.processed_tokens) > 0
@@ -578,8 +577,7 @@ export class Analytics {
 
     for (const r of rows) {
       const meta = modelMeta.get(r.modelId);
-      const rawOrCanon = r.modelId === "unknown" ? (r.rawModelId ?? "unknown") : r.modelId;
-      const canonicalId = r.modelId === "unknown" ? "unknown" : (canonicalizeModelId(rawOrCanon) ?? rawOrCanon);
+      const canonicalId = mergedModelId(r.modelId);
       const existing = modelMap.get(canonicalId);
       const owner = meta?.owner ?? modelOwner(canonicalId) ?? null;
       const display = meta?.display ?? modelDisplay(r.rawModelId, canonicalId);
@@ -597,7 +595,7 @@ export class Analytics {
           cacheReadInputTokens: r.cacheReadInputTokens,
           outputTokens: r.outputTokens,
           costNano: r.costNano,
-          sessions: r.sessions,
+          sessions: 0,
         });
       } else {
         existing.processedTokens += r.processedTokens;
@@ -606,9 +604,31 @@ export class Analytics {
         existing.cacheReadInputTokens += r.cacheReadInputTokens;
         existing.outputTokens += r.outputTokens;
         existing.costNano += r.costNano;
-        existing.sessions += r.sessions;
         if (!existing.rawModelId && r.rawModelId) existing.rawModelId = r.rawModelId;
       }
+    }
+
+    // Sessions are not additive across merged spellings: a session that used
+    // both `gpt-5.6-luna` and `openai/gpt-5.6-luna` would be counted twice if
+    // we summed the per-stored-id distinct counts. Collect distinct
+    // (stored id, session) pairs instead and dedupe per merged canonical id.
+    const sessionsByModel = new Map<string, Set<string>>();
+    const sessionPairs = this.db
+      .prepare(
+        `SELECT COALESCE(e.canonical_model_id, 'unknown') AS modelId, e.session_id AS sessionId
+         FROM usage_events e ${sql}
+         GROUP BY COALESCE(e.canonical_model_id, 'unknown'), e.session_id`,
+      )
+      .all(...params) as Array<{ modelId: string; sessionId: string | null }>;
+    for (const pair of sessionPairs) {
+      if (pair.sessionId == null) continue;
+      const key = mergedModelId(pair.modelId);
+      const sessions = sessionsByModel.get(key) ?? new Set<string>();
+      sessions.add(pair.sessionId);
+      sessionsByModel.set(key, sessions);
+    }
+    for (const m of modelMap.values()) {
+      m.sessions = sessionsByModel.get(m.id)?.size ?? 0;
     }
 
     const models: ModelBreakdownItem[] = Array.from(modelMap.values())
@@ -639,6 +659,12 @@ export class Analytics {
       models,
     };
   }
+}
+
+/** Merge key for a stored canonical model id at read time. */
+function mergedModelId(storedModelId: string): string {
+  if (storedModelId === "unknown") return "unknown";
+  return canonicalizeModelId(storedModelId) ?? storedModelId;
 }
 
 function rowMetric(r: any, metric: TimeseriesMetric): number {
@@ -685,10 +711,17 @@ function rowToEvent(r: any): NormalizedUsageEvent {
     turnId: r.turn_id,
     requestId: r.request_id,
     rawProviderId: r.raw_provider_id,
-    canonicalProviderId: r.canonical_provider_id,
+    // Read-time canonicalization: rows stored before a routing change keep
+    // stale ids (e.g. `glm`, `zai-coding-plan`), so events must surface the
+    // same canonical ids that filtering and aggregation use.
+    canonicalProviderId: r.canonical_provider_id == null
+      ? null
+      : (canonicalizeProviderId(r.canonical_provider_id) ?? r.canonical_provider_id),
     providerResolution: r.provider_resolution,
     rawModelId: r.raw_model_id,
-    canonicalModelId: r.canonical_model_id,
+    canonicalModelId: r.canonical_model_id == null
+      ? null
+      : (canonicalizeModelId(r.canonical_model_id) ?? r.canonical_model_id),
     processedInputTokens: r.processed_input_tokens,
     freshInputTokens: r.fresh_input_tokens,
     cacheReadInputTokens: r.cache_read_input_tokens,
