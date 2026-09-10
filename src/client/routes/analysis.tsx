@@ -4,7 +4,7 @@ import type { CacheAttributionHarness, NormalizedUsageEvent, SummaryTotals } fro
 import { api, rangeToFilters } from "../api.js";
 import { FiltersBar, useFilterState } from "../components/Filters.js";
 import { MultiLineChart } from "../components/Chart.js";
-import { colorForHarness } from "../components/colors.js";
+import { colorForHarness, harnessLabel } from "../components/colors.js";
 import { COLORS, CompositionBar, fmtCompact, fmtCompactPrecise, fmtInt, fmtPct, fmtUsd } from "../components/ui.js";
 
 export function Analysis() {
@@ -151,11 +151,18 @@ export function Analysis() {
       <section className="instrument-section models-section">
         <div className="section-head"><div><h2>Models</h2><span className="hint">Accounting by model</span></div></div>
         <div className="table-scroll"><table className="data instrument-table analysis-models">
-          <thead><tr><th>Model</th><th>Processed</th><th>Uncached input</th><th>Cached input</th><th>Output</th><th>Cache</th><th>Cost</th></tr></thead>
+          <thead><tr><th>Model</th><th className="share-col">Share of use</th><th>Processed</th><th>Uncached input</th><th>Cached input</th><th>Output</th><th>Cache</th><th>Cost</th></tr></thead>
           <tbody>
             {modelRows.map((model) => {
+              const share = totals?.processedTokens ? model.processedTokens / (totals?.processedTokens ?? 0) : null;
               return <tr key={model.id}>
                 <td><span className="model-id">{model.display}</span></td>
+                <td className="model-share-cell">
+                  <div className="model-share">
+                    <span className="model-share-track"><i style={{ width: `${(share ?? 0) * 100}%` }} /></span>
+                    <span className="tnum">{fmtPct(share)}</span>
+                  </div>
+                </td>
                 <td className="tnum">{fmtCompactPrecise(model.processedTokens)}</td>
                 <td className="tnum">{fmtCompactPrecise(model.freshInputTokens)}</td>
                 <td className="tnum">{fmtCompactPrecise(model.cacheReadInputTokens)}</td>
@@ -164,7 +171,7 @@ export function Analysis() {
                 <td className="tnum">{fmtUsd(model.costUsd)}</td>
               </tr>;
             })}
-            {modelRows.length === 0 && <tr><td colSpan={7} className="empty">No model observations in this period.</td></tr>}
+            {modelRows.length === 0 && <tr><td colSpan={8} className="empty">No model observations in this period.</td></tr>}
           </tbody>
         </table></div>
       </section>
@@ -204,7 +211,6 @@ function aggregateLargestSessions(events: NormalizedUsageEvent[]): Array<{ id: s
 
 function formatDate(iso: string): string { return new Intl.DateTimeFormat("en", { month: "short", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }).format(new Date(iso)); }
 function providerLabel(value: string, providers: Array<{ id: string; display: string }> | undefined): string { return providers?.find((provider) => provider.id === value)?.display ?? value; }
-function harnessLabel(value: string): string { return ({ codex: "Codex", pi: "Pi", opencode: "OpenCode", "claude-code": "Claude Code", cursor: "Cursor" } as Record<string, string>)[value] ?? value; }
 function shortId(value: string): string { const parts = value.replace(/\\/g, "/").split("/").filter(Boolean); return parts.at(-1) ?? value; }
 function projectLabel(projectId: string, projects: Array<{ id: string; path: string }> | undefined): string { const resolved = projects?.find((project) => project.id === projectId); return shortId(resolved?.path ?? projectId); }
 function Readout({ value, label, detail }: { value: string; label: string; detail: string }) { return <div className="readout"><div className="readout-value">{value}</div><div className="readout-label">{label}</div><div className="readout-detail">{detail}</div></div>; }

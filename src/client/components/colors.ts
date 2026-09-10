@@ -39,6 +39,16 @@ export function colorForHarness(harness: string): string {
   return "#A2A2A2";
 }
 
+export function harnessLabel(harness: string): string {
+  const normalized = harness.trim().toLowerCase();
+  if (normalized === "pi") return "Pi";
+  if (normalized === "codex") return "Codex";
+  if (normalized === "opencode" || normalized === "open code") return "OpenCode";
+  if (normalized === "claude-code" || normalized === "claude code") return "Claude Code";
+  if (normalized === "cursor") return "Cursor";
+  return harness;
+}
+
 export function colorFor(provider: string): string {
   const existing = assigned.get(provider);
   if (existing) return existing;

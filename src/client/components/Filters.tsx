@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { HARNESS_IDS, type DimensionLists, type HarnessId } from "@shared/contracts";
 import type { RangeFilters, RangeKey } from "../api.js";
 import { MultiSelect } from "./MultiSelect.js";
+import { harnessLabel } from "./colors.js";
 
 export interface FilterState extends RangeFilters {
   range: RangeKey;
@@ -52,7 +53,7 @@ export function FiltersBar({
   const update = (patch: Partial<FilterState>) => onChange({ ...filters, ...patch });
   const clearDimensionFilters = () => update({ harness: undefined, provider: undefined, model: undefined, project: undefined });
   const activeChips: { label: string; clear: () => void }[] = [];
-  if (filters.harness?.length) activeChips.push({ label: chipLabel(filters.harness, "harness", (id) => id), clear: () => update({ harness: undefined }) });
+  if (filters.harness?.length) activeChips.push({ label: chipLabel(filters.harness, "harness", (id) => harnessLabel(id)), clear: () => update({ harness: undefined }) });
   if (filters.provider?.length) activeChips.push({ label: chipLabel(filters.provider, "provider", (id) => dims?.providers.find((p) => p.id === id)?.display ?? id), clear: () => update({ provider: undefined }) });
   if (filters.model?.length) activeChips.push({ label: chipLabel(filters.model, "model", (id) => dims?.models.find((m) => m.id === id)?.display ?? id), clear: () => update({ model: undefined }) });
   if (filters.project?.length) activeChips.push({ label: chipLabel(filters.project, "project", (id) => shortPath(dims?.projects.find((p) => p.id === id)?.path ?? id)), clear: () => update({ project: undefined }) });
@@ -105,7 +106,7 @@ export function FiltersBar({
             <div className="filter-panel-body">
               <div className="filter-section-label">Dimensions</div>
               <div className="filter-grid">
-                <MultiSelect label="Harness" width={180} options={(dims?.harnesses ?? []).map((h) => ({ id: h, label: h }))} selected={filters.harness ?? []} onChange={(next) => update({ harness: next.length ? (next as HarnessId[]) : undefined })} />
+                <MultiSelect label="Harness" width={180} options={(dims?.harnesses ?? []).map((h) => ({ id: h, label: harnessLabel(h) }))} selected={filters.harness ?? []} onChange={(next) => update({ harness: next.length ? (next as HarnessId[]) : undefined })} />
                 <MultiSelect label="Model" width={220} options={(dims?.models ?? []).map((m) => ({ id: m.id, label: m.display, count: m.eventCount }))} selected={filters.model ?? []} onChange={(next) => update({ model: next.length ? next : undefined })} />
                 <MultiSelect label="Provider" width={200} options={(dims?.providers ?? []).map((p) => ({ id: p.id, label: p.display, count: p.eventCount }))} selected={filters.provider ?? []} onChange={(next) => update({ provider: next.length ? next : undefined })} />
                 <MultiSelect label="Project" width={220} options={(dims?.projects ?? []).map((p) => ({ id: p.id, label: shortPath(p.path), count: p.eventCount }))} selected={filters.project ?? []} onChange={(next) => update({ project: next.length ? next : undefined })} />

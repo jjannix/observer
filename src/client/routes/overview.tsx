@@ -1,10 +1,10 @@
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQueries, useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import { api, rangeToFilters } from "../api.js";
 import { CHART_METRICS, FiltersBar, useFilterState, type FilterState } from "../components/Filters.js";
-import { MultiLineChart, SignalChart } from "../components/Chart.js";
-import { colorForHarness } from "../components/colors.js";
+import { OverviewChart } from "../components/Chart.js";
+import { colorForHarness, harnessLabel } from "../components/colors.js";
 import { MetricSelect } from "../components/MetricSelect.js";
 import { CompositionBar, COLORS, fmtCompact, fmtCompactPrecise, fmtInt, fmtPct, fmtUsd } from "../components/ui.js";
 
@@ -55,9 +55,13 @@ export function Overview() {
     queryFn: () => api.summary(previousRange!),
     enabled: Boolean(previousRange),
   });
-  const { data: timeseries } = useQuery({
-    queryKey: ["timeseries", "overview", chartGrouping, range, chartMetric],
-    queryFn: () => api.timeseries(range, chartMetric, chartGrouping === "harness" ? "harness" : "provider"),
+  const { data: totalTimeseries, isLoading: totalLoading } = useQuery({
+    queryKey: ["timeseries", "overview", "total", range, chartMetric],
+    queryFn: () => api.timeseries(range, chartMetric, "provider"),
+  });
+  const { data: rawHarnessTimeseries, isLoading: harnessLoading } = useQuery({
+    queryKey: ["timeseries", "overview", "harness", range, chartMetric],
+    queryFn: () => api.timeseries(range, chartMetric, "harness"),
   });
   const modelCandidates = (dims?.models ?? []).slice(0, 12);
   const modelSummaries = useQueries({
@@ -75,11 +79,14 @@ export function Overview() {
     .map((model, index) => ({ model, totals: modelSummaries[index]?.data?.totals }))
     .filter(({ totals: row }) => row == null || row.processedTokens > 0)
     .slice(0, 5);
-  const harnessChart = useMemo(() => chartGrouping === "harness" && timeseries ? {
-    buckets: timeseries.buckets,
-    providers: timeseries.providers.map(harnessLabel),
-    points: timeseries.points.map((point) => ({ ...point, provider: harnessLabel(point.provider) })),
-  } : null, [chartGrouping, timeseries]);
+  const harnessChart = useMemo(() => (rawHarnessTimeseries ? {
+    buckets: rawHarnessTimeseries.buckets,
+    providers: rawHarnessTimeseries.providers.map(harnessLabel),
+    points: rawHarnessTimeseries.points.map((point) => ({ ...point, provider: harnessLabel(point.provider) })),
+  } : null), [rawHarnessTimeseries]);
+
+  const isChartLoading = (chartGrouping === "total" && totalLoading && !totalTimeseries) ||
+    (chartGrouping === "harness" && harnessLoading && !rawHarnessTimeseries);
 
   return (
     <div className="overview-page">
@@ -111,13 +118,12 @@ export function Overview() {
         <div className="section-head">
           <div>
             <h2>Usage over time</h2>
-            <span className="hint">{chartGrouping === "harness" ? "Daily harness comparison" : "Daily observations"} · {rangeLabel(filters.range)}</span>
+            <span className="hint mode-hint" key={chartGrouping}>
+              {chartGrouping === "harness" ? "Daily harness comparison" : "Daily observations"} · {rangeLabel(filters.range)}
+            </span>
           </div>
           <div className="chart-controls">
-            <div className="chart-group-toggle" role="group" aria-label="Chart grouping">
-              <button type="button" className={chartGrouping === "total" ? "active" : ""} aria-pressed={chartGrouping === "total"} onClick={() => setChartGrouping("total")}>Total</button>
-              <button type="button" className={chartGrouping === "harness" ? "active" : ""} aria-pressed={chartGrouping === "harness"} onClick={() => setChartGrouping("harness")}>Harnesses</button>
-            </div>
+            <ChartGroupToggle value={chartGrouping} onChange={setChartGrouping} />
             <MetricSelect
               value={chartMetric}
               options={CHART_METRICS}
@@ -125,25 +131,18 @@ export function Overview() {
             />
           </div>
         </div>
-        {chartGrouping === "harness" && harnessChart ? (
-          <MultiLineChart
-            buckets={harnessChart.buckets}
-            providers={harnessChart.providers}
-            points={harnessChart.points}
+        {isChartLoading ? (
+          <div className="skeleton chart-skeleton" />
+        ) : (
+          <OverviewChart
+            grouping={chartGrouping}
+            totalData={totalTimeseries}
+            harnessData={harnessChart}
             formatValue={METRIC_FORMATTER[chartMetric] ?? fmtCompact}
             height={410}
-            ariaLabel="Harness usage comparison over time"
             seriesColor={colorForHarness}
-            fillAreas
           />
-        ) : timeseries ? (
-          <SignalChart
-            buckets={timeseries.buckets}
-            providers={timeseries.providers}
-            points={timeseries.points}
-            formatValue={METRIC_FORMATTER[chartMetric] ?? fmtCompact}
-          />
-        ) : <div className="skeleton chart-skeleton" />}
+        )}
       </section>
 
       <section className="instrument-section composition-section">
@@ -191,12 +190,75 @@ export function Overview() {
   );
 }
 
-function Readout({ label, value }: { label: string; value: string }) {
-  return <div className="readout"><div className="readout-value">{value}</div><div className="readout-label">{label}</div></div>;
+function ChartGroupToggle({
+  value,
+  onChange,
+}: {
+  value: "total" | "harness";
+  onChange: (val: "total" | "harness") => void;
+}) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const totalBtnRef = useRef<HTMLButtonElement>(null);
+  const harnessBtnRef = useRef<HTMLButtonElement>(null);
+  const [indicatorStyle, setIndicatorStyle] = useState<{ left: number; width: number } | null>(null);
+
+  const updateIndicator = useCallback(() => {
+    const activeBtn = value === "total" ? totalBtnRef.current : harnessBtnRef.current;
+    if (activeBtn && containerRef.current) {
+      const containerRect = containerRef.current.getBoundingClientRect();
+      const btnRect = activeBtn.getBoundingClientRect();
+      setIndicatorStyle({
+        left: btnRect.left - containerRect.left,
+        width: btnRect.width,
+      });
+    }
+  }, [value]);
+
+  useEffect(() => {
+    updateIndicator();
+    window.addEventListener("resize", updateIndicator);
+    return () => window.removeEventListener("resize", updateIndicator);
+  }, [updateIndicator]);
+
+  return (
+    <div className="chart-group-toggle" role="group" aria-label="Chart grouping" ref={containerRef}>
+      <span
+        className="chart-group-indicator"
+        data-active={value}
+        style={
+          indicatorStyle
+            ? {
+                transform: `translateX(${indicatorStyle.left}px)`,
+                width: `${indicatorStyle.width}px`,
+              }
+            : undefined
+        }
+        aria-hidden="true"
+      />
+      <button
+        ref={totalBtnRef}
+        type="button"
+        className={value === "total" ? "active" : ""}
+        aria-pressed={value === "total"}
+        onClick={() => onChange("total")}
+      >
+        Total
+      </button>
+      <button
+        ref={harnessBtnRef}
+        type="button"
+        className={value === "harness" ? "active" : ""}
+        aria-pressed={value === "harness"}
+        onClick={() => onChange("harness")}
+      >
+        Harnesses
+      </button>
+    </div>
+  );
 }
 
-function harnessLabel(value: string): string {
-  return ({ codex: "Codex", pi: "Pi", opencode: "OpenCode", "claude-code": "Claude Code", cursor: "Cursor" } as Record<string, string>)[value] ?? value;
+function Readout({ label, value }: { label: string; value: string }) {
+  return <div className="readout"><div className="readout-value">{value}</div><div className="readout-label">{label}</div></div>;
 }
 
 function rangeLabel(range: FilterState["range"]): string {
