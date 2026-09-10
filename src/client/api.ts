@@ -1,10 +1,13 @@
 import { useEffect, useState, useCallback } from "react";
 
 async function jsonFetch<T>(url: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(url, {
-    headers: { "content-type": "application/json", ...(init?.headers ?? {}) },
-    ...init,
-  });
+  const headers = new Headers(init?.headers);
+  // An empty JSON POST is rejected by Fastify before it reaches its route.
+  // Only declare JSON when this request actually sends a body.
+  if (init?.body != null && !headers.has("content-type")) {
+    headers.set("content-type", "application/json");
+  }
+  const res = await fetch(url, { ...init, headers });
   if (!res.ok) {
     let detail = "";
     try {

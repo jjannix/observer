@@ -7,7 +7,7 @@ import { defaultBackfillArgs, runLegacyBackfill } from "../collectors/cursor/bac
 /** `npm run observer -- <command>` entry point. */
 async function main(): Promise<void> {
   const cmd = process.argv[2] ?? "help";
-  const cursorCmd = process.argv[3];
+  const subCmd = process.argv[3];
   const state = new AppState();
 
   try {
@@ -25,18 +25,18 @@ async function main(): Promise<void> {
         console.log(JSON.stringify(state.getConfig(), null, 2));
         break;
       case "cursor":
-        await cursorCommand(state, cursorCmd);
+        await cursorCommand(state, subCmd);
         break;
       default:
         console.log(`Observer v${APP_VERSION} CLI`);
         console.log(`Usage: npm run observer -- <command>`);
         console.log(`Commands:`);
-        console.log(`  doctor   Check sources, schema, health, and print a summary.`);
-        console.log(`  sync     Run one synchronization pass and exit.`);
-        console.log(`  rebuild  Clear Observer's index and rescan sources.`);
-        console.log(`  config   Print the active configuration as JSON.`);
-        console.log(`  cursor <install-hook|uninstall-hook|doctor|backfill>`);
-        console.log(`           Manage the Cursor stop hook and legacy SQLite backfill.`);
+        console.log(`  doctor       Check sources, schema, health, and print a summary.`);
+        console.log(`  sync         Run one synchronization pass and exit.`);
+        console.log(`  rebuild      Clear Observer's index and rescan sources.`);
+        console.log(`  config       Print the active configuration as JSON.`);
+        console.log(`  cursor       <install-hook|uninstall-hook|doctor|backfill>`);
+        console.log(`               Manage the Cursor stop hook and legacy SQLite backfill.`);
     }
   } finally {
     state.close();
