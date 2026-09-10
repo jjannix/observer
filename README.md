@@ -1,6 +1,6 @@
 # Observer
 
-Local-first usage analytics for AI coding harnesses. This milestone delivers **Pi**, **Codex**, **Claude Code**, and **OpenCode** collectors with historical backfill, canonical token accounting, and a diagnostic dark-mode UI — all running on `127.0.0.1` with no network calls, no telemetry, and no authentication.
+Local-first usage analytics for AI coding harnesses. This milestone delivers **Pi**, **Codex**, **Claude Code**, **OpenCode**, and **Cursor** collectors with historical backfill, canonical token accounting, and a diagnostic dark-mode UI — all running on `127.0.0.1` with no network calls, no telemetry, and no authentication.
 
 ## Quick start
 
@@ -49,6 +49,7 @@ npm run lint
 - **Codex sources:** `%USERPROFILE%\.codex\sessions` and `%USERPROFILE%\.codex\archived_sessions`
 - **Claude Code source:** `CLAUDE_CONFIG_DIR\projects` or `%USERPROFILE%\.claude\projects` (override with `CLAUDE_CODE_PROJECTS_ROOT`)
 - **OpenCode source:** `XDG_DATA_HOME\opencode` or `%USERPROFILE%\.local\share\opencode` (override with `OPENCODE_DATA_DIR`)
+- **Cursor spool:** `%LOCALAPPDATA%\Observer\cursor\spool` (override with `CURSOR_OBSERVER_ROOT`)
 
 Paths are auto-detected, editable, and individually disableable. Changing the history cutoff requires **Save and rebuild**. Rebuild deletes and recreates **only Observer's index**; harness source data is never modified.
 
@@ -115,6 +116,11 @@ Observer reads OpenCode's local SQLite database (`opencode.db` in its data direc
 - Deleted/compacted messages are not re-synced; historical accounting is retained.
 
 OpenCode's database schema is internal and subject to change; the collector is versioned so an adapter update triggers a source-only reindex. The database is opened read-only with a busy timeout, and never written. A non-empty WAL sidecar is folded into change detection so incremental syncs notice un-checkpointed writes; the shared-memory sidecar (and empty WAL files, which read-only connections create) are excluded because they churn on every connection and would defeat the skip.
+
+### Cursor integration
+
+Cursor usage is collected through Observer's sanitized stop-hook spool. Install and inspect it with `npm run observer -- cursor install-hook` and `npm run observer -- cursor doctor`; Observer never reads Cursor's private database during live collection.
+
 
 ## Project & identity resolution
 
@@ -186,7 +192,7 @@ src/
   client/            React + Vite + TanStack Query/Table (overview, events, settings)
   server/
     api/             Fastify routes + analytics queries
-    collectors/      contract, Pi, Codex, Claude Code, OpenCode, JSONL streaming, envelope hashing
+    collectors/      contract, Pi, Codex, Claude Code, OpenCode, Cursor, JSONL streaming, envelope hashing
     config/          versioned config, paths, Zod schema
     db/              better-sqlite3 + drizzle schema + migration runner
     normalization/   canonical keys, resolution, metric formulas
