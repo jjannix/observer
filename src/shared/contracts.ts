@@ -321,3 +321,65 @@ export const DEFAULT_SYNC_INTERVAL_SECONDS = 60;
 export const DEFAULT_TIMEZONE = "Europe/Berlin";
 export const EVENT_PAGE_SIZE_DEFAULT = 100;
 export const EVENT_PAGE_SIZE_MAX = 250;
+
+
+/** Session values are aggregated over all matching requests before pagination. */
+export interface SessionUsage {
+  firstActivity: string;
+  lastActivity: string;
+  requests: number;
+  turns: number;
+  attributedRequests: number;
+  processedTokens: number;
+  processedInputTokens: number;
+  freshInputTokens: number;
+  cacheReadInputTokens: number;
+  cacheWriteInputTokens: number;
+  outputTokens: number;
+  reasoningOutputTokens: number;
+  reasoningAvailable: number;
+  cacheWriteAvailable: number;
+  unattributedTokens: number;
+  costUsd: number | null;
+  costCoverage: number | null;
+  costAvailable: number;
+  cacheHitRate: number | null;
+}
+
+export interface SessionModelUsage extends SessionUsage {
+  model: string;
+  provider: string;
+  billingMode: BillingMode;
+}
+
+export interface SessionSummary extends SessionUsage {
+  sessionId: string;
+  harness: HarnessId;
+  projectId: string | null;
+  projectPath: string | null;
+  models: string[];
+}
+
+export type SortDirection = "asc" | "desc";
+export const SESSION_SORTS = ["recent", "tokens", "cost", "requests", "project", "harness", "cache"] as const;
+export type SessionSort = (typeof SESSION_SORTS)[number];
+export interface SessionsPage {
+  items: SessionSummary[];
+  total: number;
+  page: number;
+  pageSize: number;
+}
+
+export interface SessionDetail {
+  session: SessionSummary;
+  models: SessionModelUsage[];
+  timelineBucketSeconds: number;
+  timeline: Array<{ bucket: number; occurredAt: string; processedTokens: number; outputTokens: number; requests: number }>;
+  largestRequests: NormalizedUsageEvent[];
+  qualityFlags: string[];
+  /** True when at least one request is covered by a declared subscription. */
+  hasSubscription: boolean;
+}
+
+export const REQUEST_SORTS = ["oldest", "recent", "largest", "model", "fresh", "cache", "output", "cost"] as const;
+export type RequestSort = (typeof REQUEST_SORTS)[number];

@@ -158,6 +158,9 @@ Resolution precedence: **user-override → seed-alias → deterministic → unkn
 | GET | `/models-breakdown` | per-model in-range totals ranked by processed tokens |
 | GET | `/cache-attribution` | harness cache-read share, provider mix, and adjusted lift |
 | GET | `/events` | opaque-cursor pagination over normalized events |
+| GET | `/sessions` | complete in-range session aggregates, search, sorting, and pagination |
+| GET | `/sessions/:id` | session totals, model/provider breakdown, usage timeline, and largest requests |
+| GET | `/sessions/:id/requests` | session-scoped request pagination, ordered by time or token usage |
 | GET | `/config` | sanitized configuration + resolved paths |
 | PUT | `/config` | validate + atomically persist |
 | POST | `/renormalize` | rebuild canonical rows from retained envelopes |
@@ -166,6 +169,16 @@ Resolution precedence: **user-override → seed-alias → deterministic → unkn
 `summary` and `events` accept `from`, exclusive `to`, and canonical `harness`/`provider`/`model`/`project` filters. Event page size defaults to 100 and is capped at 250. Provider grouping and filters resolve stored canonical ids through the current alias rules at read time, so rows written by older builds never split a provider family.
 
 > **Do not run old builds against the same data directory.** Canonicalization rules evolve; a stale writer stores outdated canonical provider/model ids alongside current ones. If it happens anyway, `POST /renormalize` replays all retained envelopes through the current rules and repairs the split.
+
+## Session explorer
+
+Sessions shows complete aggregates over every request matching the selected period and filters. Search by project path, model, or session ID; sort by latest activity, processed tokens, reported cost, or request count. Pagination applies to session groups, so a large session is never truncated at an event-page boundary.
+
+Opening a session defaults to its full collected history. **Selected period & filters** switches both the detail totals and request list to the current observation scope. Detail URLs preserve the session identity for bookmarking. The detail view exposes token composition, model/provider usage, a bounded time-bucket chart, largest requests, and a paginated request table with sortable column headers. Click a header again to reverse its order; session and request sorting applies before pagination. Accounting notes surface source limitations; conversation content is not collected.
+
+**Reported cost** is unavailable when the source supplied no cost, and explicitly partial when only some requests supplied it. Subscription-marked provider figures are list-price equivalents, as elsewhere in Observer. **Observed span** means the interval between first and last recorded usage, including idle gaps; it does not measure active working time. Reasoning is shown as a subset of output and never added twice.
+
+The list API accepts the shared filters plus `search`, `sort=recent|tokens|cost|requests|project|harness|cache`, `direction=asc|desc`, `page` (1-based), and `pageSize` (1–100, default 25). Session detail and requests default to full history unless shared filters are supplied. Request pagination accepts `sort=oldest|recent|largest|model|fresh|cache|output|cost`, `direction=asc|desc`, opaque `cursor`, and `pageSize` (1–250, default 50). Session IDs in route paths must be URL-encoded.
 
 ## Privacy
 

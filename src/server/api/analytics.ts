@@ -5,6 +5,8 @@ import {
   type CacheAttributionResponse,
   type DimensionLists,
   type EventsPage,
+  type RequestSort,
+  type SortDirection,
   type LargestSessionRow,
   type ModelBreakdownItem,
   type ModelsBreakdownResponse,
@@ -54,6 +56,7 @@ export interface TimeseriesResponse {
 }
 
 export interface RangeFilters extends AppliedFilters {
+  sessionId?: string;
   from?: string | null;
   to?: string | null;
 }
@@ -118,9 +121,13 @@ function expandModelFilter(db: RawDatabase, requestedModels: string[]): string[]
   }
 }
 
-function buildWhere(db: RawDatabase, filters: RangeFilters): { sql: string; params: any[] } {
+export function buildWhere(db: RawDatabase, filters: RangeFilters): { sql: string; params: any[] } {
   const clauses: string[] = [];
   const params: any[] = [];
+  if (filters.sessionId) {
+    clauses.push(`e.session_id = ?`);
+    params.push(filters.sessionId);
+  }
   if (filters.from) {
     clauses.push(`e.occurred_at >= ?`);
     params.push(filters.from);
@@ -394,23 +401,39 @@ export class Analytics {
     return { filters, harnesses };
   }
 
-  events(filters: RangeFilters, cursor: string | null, pageSize: number): EventsPage {
+  events(filters: RangeFilters, cursor: string | null, pageSize: number, sort: RequestSort = "oldest", order?: SortDirection): EventsPage {
     const size = Math.min(Math.max(1, pageSize || EVENT_PAGE_SIZE_DEFAULT), EVENT_PAGE_SIZE_MAX);
     const { sql, params } = buildWhere(this.db, filters);
 
+    const direction = (order ?? (sort === "oldest" || sort === "model" ? "asc" : "desc")) === "asc" ? "ASC" : "DESC";
+    const sortColumn = {
+      oldest: "e.occurred_at", recent: "e.occurred_at",
+      largest: "(e.processed_input_tokens + e.output_tokens + e.unattributed_tokens)",
+      model: "LOWER(SUBSTR(COALESCE(e.canonical_model_id, e.raw_model_id, 'Unknown'), INSTR(COALESCE(e.canonical_model_id, e.raw_model_id, 'Unknown'), '/') + 1))",
+      fresh: "e.fresh_input_tokens", cache: "e.cache_read_input_tokens", output: "e.output_tokens",
+      cost: "CASE WHEN e.cost_available = 1 THEN e.cost_nano_usd END",
+    }[sort];
+    const numericSort = sort !== "oldest" && sort !== "recent" && sort !== "model";
+    const compare = direction === "ASC" ? ">" : "<";
     const cursorClause: string[] = [];
     const cursorParams: any[] = [];
     if (cursor) {
       const [ts, id] = decodeCursor(cursor);
-      cursorClause.push(`AND (e.occurred_at > ? OR (e.occurred_at = ? AND e.id > ?))`);
-      cursorParams.push(ts, ts, id);
+      if (sort === "cost" && ts === "null") {
+        cursorClause.push(`AND (${sortColumn} IS NULL AND e.id ${compare} ?)`);
+        cursorParams.push(id);
+      } else {
+        cursorClause.push(`AND (${sort === "cost" ? `${sortColumn} IS NULL OR ` : ""}${sortColumn} ${compare} ? OR (${sortColumn} = ? AND e.id ${compare} ?))`);
+        const value = numericSort ? Number(ts) : ts;
+        cursorParams.push(value, value, id);
+      }
     }
 
     const rows = this.db
       .prepare(
-        `SELECT e.* FROM usage_events e ${sql}
+        `SELECT e.*, ${sortColumn} AS sort_value FROM usage_events e ${sql}
          ${sql ? "AND" : "WHERE"} 1=1 ${cursorClause.join(" ")}
-         ORDER BY e.occurred_at ASC, e.id ASC LIMIT ?`,
+         ORDER BY ${sortColumn} ${direction} NULLS LAST, e.id ${direction} LIMIT ?`,
       )
       .all(...params, ...cursorParams, size + 1) as any[];
 
@@ -420,7 +443,7 @@ export class Analytics {
     let nextCursor: string | null = null;
     if (hasMore && page.length > 0) {
       const last = page[page.length - 1];
-      nextCursor = encodeCursor(last.occurred_at, last.id);
+      nextCursor = encodeCursor(String(last.sort_value), last.id);
     }
 
     const totalRow = this.db
@@ -845,7 +868,7 @@ function decodeCursor(cursor: string): [string, string] {
   return [decoded.slice(0, sep), decoded.slice(sep + 1)];
 }
 
-function rowToEvent(r: any): NormalizedUsageEvent {
+export function rowToEvent(r: any): NormalizedUsageEvent {
   return {
     id: r.id,
     harness: r.harness,

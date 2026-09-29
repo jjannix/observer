@@ -22,6 +22,11 @@ async function jsonFetch<T>(url: string, init?: RequestInit): Promise<T> {
 }
 
 import type {
+  SessionDetail,
+  SessionsPage,
+  SessionSort,
+  RequestSort,
+  SortDirection,
   CacheAttributionResponse,
   DimensionLists,
   EventsPage,
@@ -60,6 +65,12 @@ export const api = {
     jsonFetch<CacheAttributionResponse>(`/api/v1/cache-attribution?${qs(filters as Record<string, unknown>)}`),
   events: (filters: RangeFilters, cursor: string | null, pageSize: number) =>
     jsonFetch<EventsPage>(`/api/v1/events?${qs({ ...filters, cursor, pageSize } as Record<string, unknown>)}`),
+  sessions: (filters: RangeFilters, search: string, sort: SessionSort, page: number, direction: SortDirection = "desc") =>
+    jsonFetch<SessionsPage>(`/api/v1/sessions?${qs({ ...filters, search, sort, page, direction })}`),
+  session: (id: string, filters: RangeFilters) =>
+    jsonFetch<SessionDetail>(`/api/v1/sessions/${encodeURIComponent(id)}?${qs(filters as Record<string, unknown>)}`),
+  sessionRequests: (id: string, filters: RangeFilters, cursor: string | null, sort: RequestSort, direction: SortDirection) =>
+    jsonFetch<EventsPage>(`/api/v1/sessions/${encodeURIComponent(id)}/requests?${qs({ ...filters, cursor, pageSize: 50, sort, direction })}`),
   largestSessions: (filters: RangeFilters, limit = 5) =>
     jsonFetch<LargestSessionRow[]>(`/api/v1/largest-sessions?${qs({ ...filters, limit } as Record<string, unknown>)}`),
   config: () => jsonFetch<SanitizedConfig>("/api/v1/config"),

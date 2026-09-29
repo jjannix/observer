@@ -12,3 +12,4 @@ observer.sqlite3-*
 /playwright-report/
 /playwright/.cache/
 coverage/
+.impeccable/

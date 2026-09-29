@@ -1,3 +1,5 @@
+import { REQUEST_SORTS, SESSION_SORTS, type RequestSort, type SessionSort, type SortDirection } from "@shared/contracts";
+import { SessionAnalytics } from "./sessions.js";
 import type { FastifyInstance } from "fastify";
 import { existsSync } from "node:fs";
 import {
@@ -16,6 +18,7 @@ import { resolveProject } from "../normalization/canonical.js";
 
 export function registerApi(app: FastifyInstance, state: AppState): void {
   const analytics = new Analytics(state.raw);
+  const sessions = new SessionAnalytics(state.raw);
 
   app.get("/api/v1/health", async (): Promise<HealthResponse> => {
     const schemaVersion = (state.raw.prepare(`SELECT COALESCE(MAX(version),0) AS v FROM schema_migrations`).get() as any).v;
@@ -72,6 +75,42 @@ export function registerApi(app: FastifyInstance, state: AppState): void {
     const cursor = typeof q.cursor === "string" ? q.cursor : null;
     const pageSize = typeof q.pageSize === "string" ? Number(q.pageSize) : EVENT_PAGE_SIZE_DEFAULT;
     return analytics.events(filters, cursor, pageSize);
+  });
+
+  app.get("/api/v1/sessions", async (req, reply) => {
+    const q = req.query as Record<string, unknown>;
+    const page = q.page == null ? 1 : Number(q.page);
+    const pageSize = q.pageSize == null ? 25 : Number(q.pageSize);
+    const sort = q.sort == null ? "recent" : String(q.sort);
+    const direction = q.direction == null ? (sort === "project" || sort === "harness" ? "asc" : "desc") : String(q.direction);
+    if (!Number.isInteger(page) || page < 1 || !Number.isInteger(pageSize) || pageSize < 1 || pageSize > 100 || !SESSION_SORTS.includes(sort as SessionSort) || !["asc", "desc"].includes(direction)) {
+      return reply.code(400).send({ error: "invalid-session-query" });
+    }
+    return sessions.list(parseFilters(q), typeof q.search === "string" ? q.search.slice(0, 500) : "", sort as SessionSort, page, pageSize, direction as SortDirection);
+  });
+
+  app.get("/api/v1/sessions/:id", async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const result = sessions.detail(id, parseFilters(req.query as Record<string, unknown>), state.getConfig().providerBilling);
+    return result ?? reply.code(404).send({ error: "session-not-found" });
+  });
+
+  app.get("/api/v1/sessions/:id/requests", async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const q = req.query as Record<string, unknown>;
+    const pageSize = q.pageSize == null ? 50 : Number(q.pageSize);
+    const cursor = typeof q.cursor === "string" ? q.cursor : null;
+    const sort = q.sort == null ? "oldest" : String(q.sort);
+    const direction = q.direction == null ? (sort === "oldest" || sort === "model" ? "asc" : "desc") : String(q.direction);
+    const decoded = cursor ? Buffer.from(cursor, "base64url").toString("utf8") : "";
+    const separator = decoded.lastIndexOf("|");
+    const cursorValue = decoded.slice(0, separator);
+    const validCursor = !cursor || (/^[A-Za-z0-9_-]{1,1024}$/.test(cursor) && separator > 0 && separator < decoded.length - 1 &&
+      (sort === "cost" && cursorValue === "null" ? true : sort === "model" ? cursorValue.length > 0 : sort === "oldest" || sort === "recent" ? Number.isFinite(Date.parse(cursorValue)) : /^-?\d+$/.test(cursorValue) && Number.isSafeInteger(Number(cursorValue))));
+    if (!validCursor || !REQUEST_SORTS.includes(sort as RequestSort) || !["asc", "desc"].includes(direction) || !Number.isInteger(pageSize) || pageSize < 1 || pageSize > 250 || (cursor && !/^[A-Za-z0-9_-]+$/.test(cursor))) {
+      return reply.code(400).send({ error: "invalid-session-query" });
+    }
+    return analytics.events({ ...parseFilters(q), sessionId: id }, cursor, pageSize, sort as RequestSort, direction as SortDirection);
   });
 
   app.get("/api/v1/largest-sessions", async (req) => {
