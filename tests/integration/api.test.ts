@@ -90,6 +90,51 @@ describe("HTTP API", () => {
     expect(body.totals.costUsd).toBeCloseTo(0.01, 6);
   });
 
+  it("largest-sessions aggregates every event in range and ranks by processed tokens", async () => {
+    const userLine = (name: string, i: number) =>
+      JSON.stringify({ type: "message", id: `${name}_u${i}`, role: "user", parentId: i === 0 ? null : `${name}_a${i - 1}` });
+    const assistantLine = (name: string, i: number, ts: string, input: number) =>
+      JSON.stringify({
+        type: "message",
+        id: `${name}_a${i}`,
+        role: "assistant",
+        parentId: `${name}_u${i}`,
+        timestamp: ts,
+        message: { provider: "openai", model: "gpt-5" },
+        usage: { input, cacheRead: 0, cacheWrite: 0, output: 10, totalTokens: input + 10, cost: { total: 0.01 } },
+      });
+    const bigLines = [
+      JSON.stringify({ type: "header", id: "big", cwd: join(piRoot, "proj") }),
+      ...[0, 1, 2].flatMap((i) => [userLine("big", i), assistantLine("big", i, `2025-01-0${i + 1}T00:00:00Z`, 1000)]),
+    ];
+    writeFileSync(join(piRoot, "big.jsonl"), bigLines.join("\n") + "\n");
+    writeFileSync(join(piRoot, "small.jsonl"), [
+      JSON.stringify({ type: "header", id: "small", cwd: join(piRoot, "proj") }),
+      assistantLine("small", 0, "2025-01-05T00:00:00Z", 100),
+    ].join("\n") + "\n");
+    await syncOnce();
+
+    const res = await app.inject({ method: "GET", url: "/api/v1/largest-sessions" });
+    expect(res.statusCode).toBe(200);
+    const rows = res.json();
+    expect(rows).toHaveLength(2);
+    expect(rows[0].sessionId).toContain("big");
+    expect(rows[0].events).toBe(3);
+    expect(rows[0].processedTokens).toBe(3 * 1010);
+    expect(rows[0].costUsd).toBeCloseTo(0.03, 6);
+    expect(rows[1].sessionId).toContain("small");
+    expect(rows[1].processedTokens).toBe(110);
+
+    // Sessions without cost data surface null, not a fake zero.
+    state.raw.prepare("UPDATE usage_events SET cost_nano_usd = NULL, cost_available = 0 WHERE session_id LIKE '%big'").run();
+    const nocost = await app.inject({ method: "GET", url: "/api/v1/largest-sessions" });
+    expect(nocost.json()[0].costUsd).toBeNull();
+
+    // Range filters apply to the whole aggregation, not a page of events.
+    const filtered = await app.inject({ method: "GET", url: "/api/v1/largest-sessions?from=2026-01-01" });
+    expect(filtered.json()).toEqual([]);
+  });
+
   it("attributes cache reuse against other harnesses on shared providers", async () => {
     const insert = state.raw.prepare(
       `INSERT INTO usage_events
@@ -473,6 +518,18 @@ describe("HTTP API", () => {
       1_000_000,
     );
 
+    // Model with no cost-available events reports null cost, not a fake $0.
+    // Model with partial cost coverage reports the covered amount plus coverage.
+    state.raw.prepare(
+      "UPDATE usage_events SET cost_available = 1, cost_nano_usd = 1000000 WHERE id IN ('m1_e1', 'm1_e2', 'm1_e3')",
+    ).run();
+    const cfg = state.getConfig();
+    cfg.providerBilling = [
+      { provider: "test", mode: "subscription" },
+      { provider: "google", mode: "metered" },
+    ];
+    state.updateConfig(cfg);
+
     const res = await app.inject({ method: "GET", url: "/api/v1/models-breakdown" });
     expect(res.statusCode).toBe(200);
     const body = res.json();
@@ -487,6 +544,19 @@ describe("HTTP API", () => {
       outputTokens: 200_000,
     });
     expect(body.models[0].cacheHitRate).toBeCloseTo(600_000 / 800_000);
+
+    // No cost data anywhere in these fixtures -> null, never $0.
+    expect(body.models[0].costUsd).toBeNull();
+    expect(body.models[0].costCoverage).toBe(0);
+
+    // Partial coverage: 3 of 5 events costed -> 60% coverage, sum of costed events only.
+    const model1 = body.models.find((m: any) => m.id === "test/model-1");
+    expect(model1.costCoverage).toBeCloseTo(0.6);
+    expect(model1.costUsd).toBeCloseTo(0.003, 6);
+
+    // Billing modes resolve from the provider segment of the model id.
+    expect(model1.billingMode).toBe("subscription");
+    expect(body.models[0].billingMode).toBe("metered"); // google/gemini-3.7-flash
 
     // Dimensions models also ordered by volume
     const dimsRes = await app.inject({ method: "GET", url: "/api/v1/dimensions" });

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useQueries, useQuery } from "@tanstack/react-query";
+import { keepPreviousData, useQueries, useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import { api, rangeToFilters } from "../api.js";
 import { CHART_METRICS, FiltersBar, useFilterState, type FilterState } from "../components/Filters.js";
@@ -55,13 +55,16 @@ export function Overview() {
     queryFn: () => api.summary(previousRange!),
     enabled: Boolean(previousRange),
   });
-  const { data: totalTimeseries, isLoading: totalLoading } = useQuery({
-    queryKey: ["timeseries", "overview", "total", range, chartMetric],
-    queryFn: () => api.timeseries(range, chartMetric, "provider"),
-  });
-  const { data: rawHarnessTimeseries, isLoading: harnessLoading } = useQuery({
-    queryKey: ["timeseries", "overview", "harness", range, chartMetric],
-    queryFn: () => api.timeseries(range, chartMetric, "harness"),
+  const { data: chartData, isLoading: isChartLoading, isFetching: isChartUpdating } = useQuery({
+    queryKey: ["timeseries", "overview", range, chartMetric],
+    queryFn: async () => {
+      const [total, harness] = await Promise.all([
+        api.timeseries(range, chartMetric, "provider"),
+        api.timeseries(range, chartMetric, "harness"),
+      ]);
+      return { total, harness, metric: chartMetric };
+    },
+    placeholderData: keepPreviousData,
   });
   const modelCandidates = (dims?.models ?? []).slice(0, 12);
   const modelSummaries = useQueries({
@@ -79,14 +82,12 @@ export function Overview() {
     .map((model, index) => ({ model, totals: modelSummaries[index]?.data?.totals }))
     .filter(({ totals: row }) => row == null || row.processedTokens > 0)
     .slice(0, 5);
+  const rawHarnessTimeseries = chartData?.harness;
   const harnessChart = useMemo(() => (rawHarnessTimeseries ? {
     buckets: rawHarnessTimeseries.buckets,
     providers: rawHarnessTimeseries.providers.map(harnessLabel),
     points: rawHarnessTimeseries.points.map((point) => ({ ...point, provider: harnessLabel(point.provider) })),
   } : null), [rawHarnessTimeseries]);
-
-  const isChartLoading = (chartGrouping === "total" && totalLoading && !totalTimeseries) ||
-    (chartGrouping === "harness" && harnessLoading && !rawHarnessTimeseries);
 
   return (
     <div className="overview-page">
@@ -114,7 +115,7 @@ export function Overview() {
         </div>
       </section>
 
-      <section className="instrument-section usage-section">
+      <section className="instrument-section usage-section" aria-busy={isChartUpdating}>
         <div className="section-head">
           <div>
             <h2>Usage over time</h2>
@@ -136,9 +137,9 @@ export function Overview() {
         ) : (
           <OverviewChart
             grouping={chartGrouping}
-            totalData={totalTimeseries}
+            totalData={chartData?.total}
             harnessData={harnessChart}
-            formatValue={METRIC_FORMATTER[chartMetric] ?? fmtCompact}
+            formatValue={METRIC_FORMATTER[chartData?.metric ?? chartMetric] ?? fmtCompact}
             height={410}
             seriesColor={colorForHarness}
           />

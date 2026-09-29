@@ -136,6 +136,7 @@ Cursor usage is collected through Observer's sanitized stop-hook spool. Install 
 
 - **Sources:** roots, enabled state, history cutoff.
 - **Provider aliases:** display names.
+- **Provider billing:** optional per-provider billing mode. Cost figures are always *as reported by the source harness* — Observer never assumes anyone's plan. Declare `"providerBilling": [{ "provider": "openai", "mode": "subscription" }]` to label a provider as covered by a flat plan: its models then render as `included` with the reported figure shown as a list-price equivalent. Unmarked providers (default) keep their reported cost as-is.
 - **Provider overrides:** harness + raw provider/model + optional date bounds → canonical provider.
 - **Model aliases:** provider/model pairs → canonical model (+ owner).
 - **Project aliases:** join multiple normalized paths to one project.

@@ -5,6 +5,7 @@ import {
   type CacheAttributionResponse,
   type DimensionLists,
   type EventsPage,
+  type LargestSessionRow,
   type ModelBreakdownItem,
   type ModelsBreakdownResponse,
   type NormalizedUsageEvent,
@@ -22,6 +23,7 @@ import {
   modelDisplay,
   modelOwner,
 } from "../normalization/canonical.js";
+import type { ProviderBilling } from "../config/schema.js";
 
 export type TimeseriesMetric =
   | "processedTokens"
@@ -428,6 +430,66 @@ export class Analytics {
     return { items, nextCursor, total: totalRow?.c ?? 0 };
   }
 
+  /**
+   * Largest sessions in the filtered range, aggregated in SQL over ALL
+   * matching events (unlike the paginated /events endpoint, which only
+   * exposes one page at a time).
+   */
+  largestSessions(filters: RangeFilters, limit = 5): LargestSessionRow[] {
+    const size = Math.min(Math.max(1, limit || 5), 25);
+    const { sql, params } = buildWhere(this.db, filters);
+    const processedExpr = "(e.processed_input_tokens + e.output_tokens + e.unattributed_tokens)";
+    const rows = this.db
+      .prepare(
+        `WITH per_session AS (
+           SELECT e.session_id AS sessionId,
+                  MIN(e.occurred_at) AS startedAt,
+                  SUM(${processedExpr}) AS processed,
+                  SUM(e.cost_nano_usd) AS costNano,
+                  COUNT(*) AS events,
+                  MAX(e.harness) AS harness
+           FROM usage_events e ${sql}
+           GROUP BY e.session_id
+         ),
+         ranked_models AS (
+           SELECT e.session_id AS sessionId,
+                  COALESCE(e.canonical_model_id, e.raw_model_id, 'unknown-model') AS model,
+                  ROW_NUMBER() OVER (
+                    PARTITION BY e.session_id
+                    ORDER BY SUM(${processedExpr}) DESC
+                  ) AS rn
+           FROM usage_events e ${sql}
+           GROUP BY e.session_id, COALESCE(e.canonical_model_id, e.raw_model_id, 'unknown-model')
+         ),
+         ranked_projects AS (
+           SELECT e.session_id AS sessionId,
+                  e.project_id AS project,
+                  ROW_NUMBER() OVER (PARTITION BY e.session_id ORDER BY e.occurred_at ASC, e.id ASC) AS rn
+           FROM usage_events e ${sql}
+         )
+         SELECT s.sessionId, s.startedAt, s.processed, s.costNano, s.events, s.harness,
+                m.model, p.project
+         FROM per_session s
+         LEFT JOIN ranked_models m ON m.sessionId = s.sessionId AND m.rn = 1
+         LEFT JOIN ranked_projects p ON p.sessionId = s.sessionId AND p.rn = 1
+         ORDER BY s.processed DESC
+         LIMIT ?`,
+      )
+      // buildWhere placeholders repeat once per CTE above, so bind params per occurrence.
+      .all(...params, ...params, ...params, size) as any[];
+
+    return rows.map((row) => ({
+      sessionId: String(row.sessionId),
+      startedAt: row.startedAt,
+      harness: row.harness,
+      model: row.model ?? "unknown-model",
+      project: row.project ?? null,
+      events: row.events,
+      processedTokens: row.processed ?? 0,
+      costUsd: nanoToUsd(row.costNano ?? null),
+    }));
+  }
+
   dimensions(providerAliases: Array<{ raw: string; display: string }> = []): DimensionLists {
     const rawProviders = this.db
       .prepare(
@@ -586,7 +648,7 @@ export class Analytics {
     return { metric, groupBy, buckets, providers, points };
   }
 
-  modelsBreakdown(filters: RangeFilters): ModelsBreakdownResponse {
+  modelsBreakdown(filters: RangeFilters, billing: ProviderBilling[] = []): ModelsBreakdownResponse {
     const { sql, params } = buildWhere(this.db, filters);
     const rows = this.db
       .prepare(
@@ -598,7 +660,8 @@ export class Analytics {
            COALESCE(SUM(e.fresh_input_tokens), 0) AS freshInputTokens,
            COALESCE(SUM(e.cache_read_input_tokens), 0) AS cacheReadInputTokens,
            COALESCE(SUM(e.output_tokens), 0) AS outputTokens,
-           COALESCE(SUM(CASE WHEN e.cost_available THEN e.cost_nano_usd ELSE 0 END), 0) AS costNano
+           COALESCE(SUM(CASE WHEN e.cost_available THEN e.cost_nano_usd ELSE 0 END), 0) AS costNano,
+           COALESCE(SUM(CASE WHEN e.cost_available THEN e.processed_tokens ELSE 0 END), 0) AS costCoverageProcessedTokens
          FROM usage_events e ${sql}
          GROUP BY COALESCE(e.canonical_model_id, 'unknown')
          HAVING SUM(e.processed_tokens) > 0
@@ -629,6 +692,7 @@ export class Analytics {
       cacheReadInputTokens: number;
       outputTokens: number;
       costNano: number;
+      costCoverageProcessedTokens: number;
       sessions: number;
     }
 
@@ -654,6 +718,7 @@ export class Analytics {
           cacheReadInputTokens: r.cacheReadInputTokens,
           outputTokens: r.outputTokens,
           costNano: r.costNano,
+          costCoverageProcessedTokens: r.costCoverageProcessedTokens,
           sessions: 0,
         });
       } else {
@@ -663,6 +728,7 @@ export class Analytics {
         existing.cacheReadInputTokens += r.cacheReadInputTokens;
         existing.outputTokens += r.outputTokens;
         existing.costNano += r.costNano;
+        existing.costCoverageProcessedTokens += r.costCoverageProcessedTokens;
         if (!existing.rawModelId && r.rawModelId) existing.rawModelId = r.rawModelId;
       }
     }
@@ -695,6 +761,13 @@ export class Analytics {
       .map((m) => {
         const processedInput = m.processedInputTokens;
         const cacheHitRate = processedInput > 0 ? m.cacheReadInputTokens / processedInput : null;
+        const costCoverage = m.processedTokens > 0 ? m.costCoverageProcessedTokens / m.processedTokens : null;
+        // Billing mode is keyed by the provider segment of the canonical model
+        // id ("openai/gpt-6-sol" → "openai"). Matched verbatim and via the
+        // canonical provider route; anything unlisted stays unspecified —
+        // Observer makes no assumption about anyone's plan.
+        const ownerSegment = m.id.includes("/") ? m.id.slice(0, m.id.indexOf("/")) : m.id;
+        const billingMode = modeByProvider(billing, ownerSegment);
         return {
           id: m.id,
           canonicalModelId: m.canonicalModelId,
@@ -706,7 +779,9 @@ export class Analytics {
           freshInputTokens: m.freshInputTokens,
           cacheReadInputTokens: m.cacheReadInputTokens,
           outputTokens: m.outputTokens,
-          costUsd: nanoToUsd(m.costNano) ?? 0,
+          costUsd: costCoverage != null && costCoverage > 0 ? nanoToUsd(m.costNano) ?? 0 : null,
+          costCoverage,
+          billingMode,
           sessions: m.sessions,
           cacheHitRate,
         };
@@ -724,6 +799,16 @@ export class Analytics {
 function mergedModelId(storedModelId: string): string {
   if (storedModelId === "unknown") return "unknown";
   return canonicalizeModelId(storedModelId) ?? storedModelId;
+}
+
+function modeByProvider(billing: ProviderBilling[], ownerSegment: string): "subscription" | "metered" | "unspecified" {
+  const lower = ownerSegment.toLowerCase();
+  const canonical = canonicalizeProviderId(lower) ?? lower;
+  for (const candidate of [lower, canonical]) {
+    const match = billing.find((entry) => entry.provider.toLowerCase() === candidate);
+    if (match) return match.mode;
+  }
+  return "unspecified";
 }
 
 function rowMetric(r: any, metric: TimeseriesMetric): number {

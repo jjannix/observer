@@ -36,6 +36,12 @@ export const providerOverrideSchema = z.object({
 });
 export type ProviderOverride = z.infer<typeof providerOverrideSchema>;
 
+export const providerBillingSchema = z.object({
+  provider: z.string().min(1),
+  mode: z.enum(["subscription", "metered"]),
+});
+export type ProviderBilling = z.infer<typeof providerBillingSchema>;
+
 export const modelAliasSchema = z.object({
   provider: z.string().nullable(),
   model: z.string(),
@@ -58,6 +64,7 @@ export const observerConfigSchema = z.object({
   sources: z.array(sourceConfigSchema).default([]),
   providerAliases: z.array(providerAliasSchema).default([]),
   providerOverrides: z.array(providerOverrideSchema).default([]),
+  providerBilling: z.array(providerBillingSchema).default([]),
   modelAliases: z.array(modelAliasSchema).default([]),
   projectAliases: z.array(projectAliasSchema).default([]),
 });

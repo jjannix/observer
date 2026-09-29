@@ -56,7 +56,7 @@ export function registerApi(app: FastifyInstance, state: AppState): void {
   });
 
   app.get("/api/v1/models-breakdown", async (req): Promise<unknown> => {
-    return analytics.modelsBreakdown(parseFilters(req.query as Record<string, unknown>));
+    return analytics.modelsBreakdown(parseFilters(req.query as Record<string, unknown>), state.getConfig().providerBilling);
   });
 
   app.get("/api/v1/cache-attribution", async (req): Promise<unknown> => {
@@ -72,6 +72,12 @@ export function registerApi(app: FastifyInstance, state: AppState): void {
     const cursor = typeof q.cursor === "string" ? q.cursor : null;
     const pageSize = typeof q.pageSize === "string" ? Number(q.pageSize) : EVENT_PAGE_SIZE_DEFAULT;
     return analytics.events(filters, cursor, pageSize);
+  });
+
+  app.get("/api/v1/largest-sessions", async (req) => {
+    const q = req.query as Record<string, unknown>;
+    const limit = typeof q.limit === "string" && q.limit.length > 0 ? Number(q.limit) : 5;
+    return analytics.largestSessions(parseFilters(q), limit);
   });
 
   app.get("/api/v1/config", async (): Promise<SanitizedConfig> => sanitizeConfig(state));
@@ -194,6 +200,7 @@ function sanitizeConfig(state: AppState): SanitizedConfig {
       present: existsSync(s.root),
     })),
     providerAliases: cfg.providerAliases,
+    providerBilling: cfg.providerBilling,
     providerOverrides: cfg.providerOverrides.map((o) => ({
       harness: o.harness,
       rawProviderId: o.rawProviderId,

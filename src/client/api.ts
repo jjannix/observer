@@ -26,6 +26,7 @@ import type {
   DimensionLists,
   EventsPage,
   HealthResponse,
+  LargestSessionRow,
   ModelsBreakdownResponse,
   SanitizedConfig,
   SourceInfo,
@@ -59,6 +60,8 @@ export const api = {
     jsonFetch<CacheAttributionResponse>(`/api/v1/cache-attribution?${qs(filters as Record<string, unknown>)}`),
   events: (filters: RangeFilters, cursor: string | null, pageSize: number) =>
     jsonFetch<EventsPage>(`/api/v1/events?${qs({ ...filters, cursor, pageSize } as Record<string, unknown>)}`),
+  largestSessions: (filters: RangeFilters, limit = 5) =>
+    jsonFetch<LargestSessionRow[]>(`/api/v1/largest-sessions?${qs({ ...filters, limit } as Record<string, unknown>)}`),
   config: () => jsonFetch<SanitizedConfig>("/api/v1/config"),
   updateConfig: (cfg: unknown) =>
     jsonFetch<SanitizedConfig>("/api/v1/config", { method: "PUT", body: JSON.stringify(cfg) }),

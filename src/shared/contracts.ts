@@ -208,6 +208,8 @@ export interface CacheAttributionResponse {
   harnesses: CacheAttributionHarness[];
 }
 
+export type BillingMode = "subscription" | "metered" | "unspecified";
+
 export interface ModelBreakdownItem {
   id: string;
   canonicalModelId: string | null;
@@ -219,7 +221,12 @@ export interface ModelBreakdownItem {
   freshInputTokens: number;
   cacheReadInputTokens: number;
   outputTokens: number;
-  costUsd: number;
+  /** Null when no event for this model carried cost data (renders as "—", not $0). */
+  costUsd: number | null;
+  /** Fraction of processed tokens from cost-available events. */
+  costCoverage: number | null;
+  /** User-declared billing relationship for the model's provider. */
+  billingMode: BillingMode;
   sessions: number;
   cacheHitRate: number | null;
 }
@@ -264,6 +271,19 @@ export interface EventsPage {
   total: number;
 }
 
+export interface LargestSessionRow {
+  sessionId: string;
+  startedAt: string;
+  harness: string;
+  /** Dominant model by processed tokens within the session. */
+  model: string;
+  project: string | null;
+  events: number;
+  processedTokens: number;
+  /** Null when no event in the session carried cost data. */
+  costUsd: number | null;
+}
+
 export interface SanitizedConfig {
   configPath: string;
   dataDir: string;
@@ -282,6 +302,7 @@ export interface SanitizedConfig {
     present: boolean;
   }>;
   providerAliases: Array<{ raw: string; display: string }>;
+  providerBilling: Array<{ provider: string; mode: "subscription" | "metered" }>;
   providerOverrides: Array<{
     harness: HarnessId;
     rawProviderId: string | null;

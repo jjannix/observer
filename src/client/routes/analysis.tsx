@@ -1,6 +1,6 @@
-import { useId, useMemo, useState, type CSSProperties } from "react";
+import { useId, useMemo, useState, type CSSProperties, type ReactNode } from "react";
 import { useQueries, useQuery } from "@tanstack/react-query";
-import type { CacheAttributionHarness, NormalizedUsageEvent, SummaryTotals } from "@shared/contracts";
+import type { CacheAttributionHarness, ModelBreakdownItem, SummaryTotals } from "@shared/contracts";
 import { api, rangeToFilters } from "../api.js";
 import { FiltersBar, useFilterState } from "../components/Filters.js";
 import { MultiLineChart } from "../components/Chart.js";
@@ -27,8 +27,6 @@ export function Analysis() {
   const { data: summary } = useQuery({ queryKey: ["summary", range], queryFn: () => api.summary(range) });
   const { data: timeseries } = useQuery({ queryKey: ["timeseries", "analysis", range], queryFn: () => api.timeseries(range, "processedTokens") });
   const { data: harnessTimeseries } = useQuery({ queryKey: ["timeseries", "analysis-harness", range], queryFn: () => api.timeseries(range, "processedTokens", "harness") });
-  const { data: cacheAttribution, isPending: cacheAttributionPending } = useQuery({ queryKey: ["cache-attribution", range], queryFn: () => api.cacheAttribution(range) });
-  const { data: events } = useQuery({ queryKey: ["analysis", "events", range], queryFn: () => api.events(range, null, 250) });
   const providerCandidates = useMemo(() => {
     if (!timeseries) return [];
     const providerTotals = new Map<string, number>();
@@ -65,7 +63,8 @@ export function Analysis() {
   const cacheRate = totals?.cacheHitRate ?? null;
   const rawCost = totals && cacheRate != null && totals.costUsd > 0 ? totals.costUsd / Math.max(0.05, 1 - cacheRate) : null;
   const saved = rawCost == null ? null : Math.max(0, rawCost - (totals?.costUsd ?? 0));
-  const largestSessions = useMemo(() => aggregateLargestSessions(events?.items ?? []).slice(0, 5), [events?.items]);
+  const { data: cacheAttribution, isPending: cacheAttributionPending } = useQuery({ queryKey: ["cache-attribution", range], queryFn: () => api.cacheAttribution(range) });
+  const { data: largestSessions } = useQuery({ queryKey: ["analysis", "largest-sessions", range], queryFn: () => api.largestSessions(range, 5) });
   const providerRows = providerCandidates
     .map((provider, index) => ({ id: provider, label: providerLabel(provider, dims?.providers), totals: providerSummaries[index]?.data?.totals }))
     .filter(({ totals: row }) => row == null || row.processedTokens > 0)
@@ -151,7 +150,7 @@ export function Analysis() {
       <section className="instrument-section models-section">
         <div className="section-head"><div><h2>Models</h2><span className="hint">Accounting by model</span></div></div>
         <div className="table-scroll"><table className="data instrument-table analysis-models">
-          <thead><tr><th>Model</th><th className="share-col">Share of use</th><th>Processed</th><th>Uncached input</th><th>Cached input</th><th>Output</th><th>Cache</th><th>Cost</th></tr></thead>
+          <thead><tr><th>Model</th><th className="share-col">Share of use</th><th>Processed</th><th>Uncached input</th><th>Cached input</th><th>Output</th><th>Cache</th><th title="Cost as reported by the source harness. Providers marked 'subscription' in config.json show their list-price equivalent instead; unmarked providers keep reported cost.">Cost</th></tr></thead>
           <tbody>
             {modelRows.map((model) => {
               const share = totals?.processedTokens ? model.processedTokens / (totals?.processedTokens ?? 0) : null;
@@ -168,7 +167,7 @@ export function Analysis() {
                 <td className="tnum">{fmtCompactPrecise(model.cacheReadInputTokens)}</td>
                 <td className="tnum">{fmtCompactPrecise(model.outputTokens)}</td>
                 <td className="tnum">{fmtPct(model.cacheHitRate)}</td>
-                <td className="tnum">{fmtUsd(model.costUsd)}</td>
+                <td className="tnum">{modelCostDisplay(model)}</td>
               </tr>;
             })}
             {modelRows.length === 0 && <tr><td colSpan={8} className="empty">No model observations in this period.</td></tr>}
@@ -177,18 +176,18 @@ export function Analysis() {
       </section>
 
       <section className="instrument-section largest-sessions">
-        <div className="section-head"><div><h2>Largest sessions</h2><span className="hint">Loaded observations ranked by processed tokens</span></div></div>
+        <div className="section-head"><div><h2>Largest sessions</h2><span className="hint">Sessions in range ranked by processed tokens</span></div></div>
         <div className="table-scroll"><table className="data instrument-table">
-          <thead><tr><th>Started</th><th>Model</th><th>Project</th><th>Processed</th><th>Cost</th></tr></thead>
+          <thead><tr><th>Started</th><th>Harness / Model</th><th>Project</th><th>Processed</th><th>Cost</th></tr></thead>
           <tbody>
-            {largestSessions.map((session) => <tr key={session.id}>
+            {(largestSessions ?? []).map((session) => <tr key={session.sessionId}>
               <td>{formatDate(session.startedAt)}</td>
-              <td><span className="model-id">{session.model}</span></td>
-              <td><span className="project-id" title={session.project}>{projectLabel(session.project, dims?.projects)}</span></td>
-              <td className="tnum">{fmtCompact(session.processed)}</td>
-              <td className="tnum">{fmtUsd(session.cost)}</td>
+              <td><span className="session-agent"><strong>{harnessLabel(session.harness)}</strong><small className="model-id">{session.model}</small></span></td>
+              <td><span className="project-id" title={session.project ?? undefined}>{session.project ? projectLabel(session.project, dims?.projects) : "Unassigned"}</span></td>
+              <td className="tnum">{fmtCompact(session.processedTokens)}</td>
+              <td className="tnum">{session.costUsd == null ? "—" : fmtUsd(session.costUsd)}</td>
             </tr>)}
-            {largestSessions.length === 0 && <tr><td colSpan={5} className="empty">No sessions in this period.</td></tr>}
+            {(largestSessions?.length ?? 0) === 0 && <tr><td colSpan={5} className="empty">No sessions in this period.</td></tr>}
           </tbody>
         </table></div>
       </section>
@@ -196,23 +195,18 @@ export function Analysis() {
   );
 }
 
-function aggregateLargestSessions(events: NormalizedUsageEvent[]): Array<{ id: string; startedAt: string; model: string; project: string; processed: number; cost: number }> {
-  const groups = new Map<string, NormalizedUsageEvent[]>();
-  for (const event of events) groups.set(event.sessionId, [...(groups.get(event.sessionId) ?? []), event]);
-  return [...groups.entries()].map(([id, rows]) => ({
-    id,
-    startedAt: [...rows].sort((a, b) => Date.parse(a.occurredAt) - Date.parse(b.occurredAt))[0].occurredAt,
-    model: rows[0].canonicalModelId ?? rows[0].rawModelId ?? "unknown-model",
-    project: rows[0].projectId ?? "Unassigned",
-    processed: rows.reduce((sum, row) => sum + row.processedTokens, 0),
-    cost: rows.reduce((sum, row) => sum + (row.costUsd ?? 0), 0),
-  })).sort((a, b) => b.processed - a.processed);
-}
-
 function formatDate(iso: string): string { return new Intl.DateTimeFormat("en", { month: "short", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }).format(new Date(iso)); }
 function providerLabel(value: string, providers: Array<{ id: string; display: string }> | undefined): string { return providers?.find((provider) => provider.id === value)?.display ?? value; }
 function shortId(value: string): string { const parts = value.replace(/\\/g, "/").split("/").filter(Boolean); return parts.at(-1) ?? value; }
 function projectLabel(projectId: string, projects: Array<{ id: string; path: string }> | undefined): string { const resolved = projects?.find((project) => project.id === projectId); return shortId(resolved?.path ?? projectId); }
+function modelCostDisplay(model: ModelBreakdownItem): ReactNode {
+  if (model.costUsd == null) return "—";
+  const partial = model.costCoverage != null && model.costCoverage < 0.99;
+  const text = partial ? `${fmtUsd(model.costUsd)}*` : fmtUsd(model.costUsd);
+  return partial
+    ? <span title={`Cost available for ${fmtPct(model.costCoverage)} of processed tokens`}>{text}</span>
+    : text;
+}
 function Readout({ value, label, detail }: { value: string; label: string; detail: string }) { return <div className="readout"><div className="readout-value">{value}</div><div className="readout-label">{label}</div><div className="readout-detail">{detail}</div></div>; }
 type HarnessMetricRow = {
   id: string;

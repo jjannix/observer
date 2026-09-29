@@ -1,4 +1,4 @@
-import { useId, useMemo, useState } from "react";
+import { useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 export interface ChartPoint {
   date: string;
@@ -45,20 +45,7 @@ export function OverviewChart({
   const [hover, setHover] = useState<number | null>(null);
   const [hoveredProvider, setHoveredProvider] = useState<string | null>(null);
   const [selectedProvider, setSelectedProvider] = useState<string | null>(null);
-  const [sweepKey, setSweepKey] = useState<number>(0);
   const gradientPrefix = useId().replace(/:/g, "");
-
-  const prevGrouping = useMemo(() => ({ current: grouping }), []);
-  const [activeGrouping, setActiveGrouping] = useState(grouping);
-
-  // Trigger optical sweep animation when grouping changes
-  if (prevGrouping.current !== grouping) {
-    prevGrouping.current = grouping;
-    if (activeGrouping !== grouping) {
-      setActiveGrouping(grouping);
-      setSweepKey((k) => k + 1);
-    }
-  }
 
   const width = 1200;
   const padL = 58;
@@ -107,36 +94,44 @@ export function OverviewChart({
     return { buckets, ordered: series, values: matrix, maxValue };
   }, [harnessData, totalData]);
 
-  const buckets = (grouping === "harness" ? harnessModel?.buckets : totalModel?.buckets) ?? totalModel?.buckets ?? harnessModel?.buckets ?? [];
+  const isHarness = grouping === "harness" && harnessModel != null;
+  const targetGeometry = useMemo(() => {
+    const buckets = (isHarness ? harnessModel?.buckets : totalModel?.buckets) ?? totalModel?.buckets ?? harnessModel?.buckets ?? [];
+    const totalByDate = new Map(totalModel?.buckets.map((date, index) => [date, totalModel.dailyTotal[index]]) ?? []);
+    const total = buckets.map((date) => (totalByDate.get(date) ?? 0) / (totalModel?.maxTotal ?? 1));
+    const harness = Object.fromEntries(harnessModel?.ordered.map((provider, index) => [
+      provider,
+      buckets.map((_, pointIndex) => isHarness ? harnessModel.values[index][pointIndex] / harnessModel.maxValue : total[pointIndex]),
+    ]) ?? []);
+    return { buckets, total, harness, grouping: isHarness ? 1 : 0 };
+  }, [totalModel, harnessModel, isHarness]);
+  const geometry = useOverviewTransition(targetGeometry);
+  const buckets = targetGeometry.buckets;
 
   if (buckets.length === 0 || (!totalModel && !harnessModel)) {
     return <div className="empty chart-empty">No observations in this period.</div>;
   }
 
-  const isHarness = grouping === "harness" && harnessModel != null;
-  const activeMax = isHarness ? (harnessModel?.maxValue ?? 1) : (totalModel?.maxTotal ?? 1);
-
   const x = (index: number) => padL + (buckets.length <= 1 ? plotW / 2 : (index / (buckets.length - 1)) * plotW);
-  const y = (value: number) => padT + plotH - (value / activeMax) * plotH;
-  const yTotal = (value: number) => padT + plotH - (value / (totalModel?.maxTotal ?? 1)) * plotH;
-  const yHarness = (value: number) => padT + plotH - (value / (harnessModel?.maxValue ?? 1)) * plotH;
+  const yTotal = (index: number) => padT + plotH * (1 - (geometry.total[index] ?? 0));
+  const yHarness = (provider: string, index: number) => padT + plotH * (1 - (geometry.harness[provider]?.[index] ?? 0));
 
-  const ticks = [0, 0.25, 0.5, 0.75, 1].map((fraction) => Math.round(activeMax * fraction));
-  const labelStep = Math.max(1, Math.ceil(buckets.length / (isHarness ? 4 : 5)));
+  const tickFractions = [0, 0.25, 0.5, 0.75, 1];
+  const labelStep = Math.max(1, Math.ceil(buckets.length / 5));
   const focusedProvider = hoveredProvider ?? selectedProvider;
 
   // Pre-calculate paths
   const baseline = (padT + plotH).toFixed(1);
 
-  const totalPoints = totalModel ? totalModel.dailyTotal.map((value, index) => [x(index), yTotal(value)] as [number, number]) : [];
+  const totalPoints = totalModel ? buckets.map((_, index) => [x(index), yTotal(index)] as [number, number]) : [];
   const totalPath = smoothLinePath(totalPoints);
   const totalAreaPath = totalPoints.length > 0
     ? `${totalPath} L${totalPoints.at(-1)?.[0].toFixed(1)},${baseline} L${totalPoints[0][0].toFixed(1)},${baseline} Z`
     : "";
 
   const harnessSeriesData = harnessModel
-    ? harnessModel.ordered.map((provider, index) => {
-        const linePoints = harnessModel.values[index].map((value, pointIndex) => [x(pointIndex), yHarness(value)] as [number, number]);
+    ? harnessModel.ordered.map((provider) => {
+        const linePoints = buckets.map((_, pointIndex) => [x(pointIndex), yHarness(provider, pointIndex)] as [number, number]);
         const path = smoothLinePath(linePoints);
         const areaPath = linePoints.length > 0
           ? `${path} L${linePoints.at(-1)?.[0].toFixed(1)},${baseline} L${linePoints[0][0].toFixed(1)},${baseline} Z`
@@ -146,27 +141,23 @@ export function OverviewChart({
     : [];
 
   const hoverY = hover == null ? 0 : isHarness && harnessModel
-    ? yHarness(focusedProvider ? (harnessModel.values[harnessModel.ordered.indexOf(focusedProvider)]?.[hover] ?? 0) : Math.max(...harnessModel.values.map((v) => v[hover])))
-    : totalModel ? yTotal(totalModel.dailyTotal[hover]) : 0;
+    ? focusedProvider ? yHarness(focusedProvider, hover) : Math.min(...harnessModel.ordered.map((provider) => yHarness(provider, hover)))
+    : yTotal(hover);
 
   return (
     <div className={`telemetry-chart overview-chart-container ${isHarness ? "comparison-chart mode-harness" : "mode-total"}`}>
       <div className="chart-legend-slot">
         <div
-          className={`chart-legend overview-legend ${isHarness ? "overview-legend-enter" : ""}`}
-          style={{
-            opacity: isHarness ? 1 : 0,
-            pointerEvents: isHarness ? "auto" : "none",
-            visibility: isHarness ? "visible" : "hidden",
-          }}
+          className="chart-legend overview-legend"
+          aria-hidden={!isHarness}
         >
           {harnessModel?.ordered.map((provider, index) => (
             <button
               type="button"
               key={provider}
-              className={`overview-legend-item ${focusedProvider === provider ? "focused" : ""}`}
+              className={focusedProvider === provider ? "focused" : ""}
               aria-pressed={selectedProvider === provider}
-              style={{ "--item-idx": index } as React.CSSProperties}
+              tabIndex={isHarness ? 0 : -1}
               onMouseEnter={() => setHoveredProvider(provider)}
               onMouseLeave={() => setHoveredProvider(null)}
               onFocus={() => setHoveredProvider(provider)}
@@ -200,11 +191,10 @@ export function OverviewChart({
           setHover(pointIndex);
 
           if (isHarness && harnessModel) {
-            const nearest = harnessModel.ordered.reduce((nearestProvider, provider, providerIndex) => {
+            const nearest = harnessModel.ordered.reduce((nearestProvider, provider) => {
               if (nearestProvider == null) return provider;
-              const nearestIndex = harnessModel.ordered.indexOf(nearestProvider);
-              const currentDist = Math.abs(yHarness(harnessModel.values[providerIndex][pointIndex]) - pointerY);
-              const nearestDist = Math.abs(yHarness(harnessModel.values[nearestIndex][pointIndex]) - pointerY);
+              const currentDist = Math.abs(yHarness(provider, pointIndex) - pointerY);
+              const nearestDist = Math.abs(yHarness(nearestProvider, pointIndex) - pointerY);
               return currentDist < nearestDist ? provider : nearestProvider;
             }, null as string | null);
             setHoveredProvider(nearest);
@@ -229,32 +219,27 @@ export function OverviewChart({
               </linearGradient>
             );
           })}
-
-          <linearGradient id="overview-scan-beam" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="#afcbff" stopOpacity="0.05" />
-            <stop offset="25%" stopColor="#afcbff" stopOpacity="0.9" />
-            <stop offset="75%" stopColor="#afcbff" stopOpacity="0.9" />
-            <stop offset="100%" stopColor="#afcbff" stopOpacity="0.05" />
-          </linearGradient>
-
-          <linearGradient id="overview-scan-trail" x1="1" y1="0" x2="0" y2="0">
-            <stop offset="0%" stopColor="#afcbff" stopOpacity="0.18" />
-            <stop offset="40%" stopColor="#afcbff" stopOpacity="0.06" />
-            <stop offset="100%" stopColor="#afcbff" stopOpacity="0" />
-          </linearGradient>
         </defs>
 
         <g className="grid">
-          {ticks.map((tick) => (
-            <line key={tick} x1={padL} x2={width - padR} y1={y(tick)} y2={y(tick)} />
+          {tickFractions.map((fraction) => (
+            <line key={fraction} x1={padL} x2={width - padR} y1={padT + plotH * (1 - fraction)} y2={padT + plotH * (1 - fraction)} />
           ))}
         </g>
 
-        <g className="axis" key={`axis-${grouping}`}>
-          {ticks.map((tick) => (
-            <text key={tick} x={padL - 10} y={y(tick) + 4} textAnchor="end" className="axis-tick-label animating">
-              {formatValue(tick)}
-            </text>
+        <g className="axis">
+          {/* Each scale fades with its data; the grid and dates stay fixed. */}
+          {[
+            { mode: "total", max: totalModel?.maxTotal ?? 1, active: !isHarness },
+            { mode: "harness", max: harnessModel?.maxValue ?? 1, active: isHarness },
+          ].map(({ mode, max, active }) => (
+            <g key={mode} className={`overview-chart-layer ${active ? "is-active" : "is-inactive"}`} aria-hidden={!active}>
+              {tickFractions.map((fraction) => (
+                <text key={fraction} x={padL - 10} y={padT + plotH * (1 - fraction) + 4} textAnchor="end">
+                  {formatValue(Math.round(max * fraction))}
+                </text>
+              ))}
+            </g>
           ))}
           {buckets.map((date, index) =>
             index % labelStep === 0 || index === buckets.length - 1 ? (
@@ -270,34 +255,13 @@ export function OverviewChart({
           )}
         </g>
 
-        {/* Optical Aperture Sweep Line */}
-        {sweepKey > 0 && (
-          <g className="overview-aperture-sweep" key={`sweep-${sweepKey}`}>
-            <rect
-              x={padL - 48}
-              y={padT}
-              width="48"
-              height={plotH}
-              fill="url(#overview-scan-trail)"
-            />
-            <line
-              x1={padL}
-              y1={padT}
-              x2={padL}
-              y2={padT + plotH}
-              stroke="url(#overview-scan-beam)"
-              strokeWidth="1.5"
-              vectorEffect="non-scaling-stroke"
-            />
-          </g>
-        )}
-
         {/* Total Signal Layer */}
         <g
-          className={`overview-signal-group overview-signal-total ${
+          className={`overview-chart-layer overview-signal-total ${
             !isHarness ? "is-active" : "is-inactive"
           }`}
           aria-hidden={isHarness}
+          style={{ opacity: 1 - geometry.grouping }}
         >
           {totalAreaPath && <path className="signal-area" d={totalAreaPath} fill="url(#signal-area-gradient)" />}
           {totalPath && <path className="signal" d={totalPath} vectorEffect="non-scaling-stroke" />}
@@ -305,10 +269,11 @@ export function OverviewChart({
 
         {/* Harness Multi-Line Layer */}
         <g
-          className={`overview-signal-group overview-signal-harness ${
+          className={`overview-chart-layer overview-signal-harness ${
             isHarness ? "is-active" : "is-inactive"
           }`}
           aria-hidden={!isHarness}
+          style={{ opacity: geometry.grouping }}
         >
           {harnessSeriesData.map(({ provider, areaPath }, index) => (
             <path
@@ -316,7 +281,6 @@ export function OverviewChart({
               className={`comparison-area ${focusedProvider === provider ? "focused" : focusedProvider ? "subdued" : ""}`}
               d={areaPath}
               fill={`url(#${gradientPrefix}-area-${index})`}
-              style={{ "--series-idx": index } as React.CSSProperties}
             />
           ))}
           {harnessSeriesData.map(({ provider, path }, index) => (
@@ -325,10 +289,7 @@ export function OverviewChart({
               className={`comparison-signal series-${index} ${
                 focusedProvider === provider ? "focused" : focusedProvider ? "subdued" : ""
               }`}
-              style={{
-                ...(seriesColor ? { stroke: seriesColor(provider, index) } : {}),
-                "--series-idx": index,
-              } as React.CSSProperties}
+              style={seriesColor ? { stroke: seriesColor(provider, index) } : undefined}
               d={path}
               vectorEffect="non-scaling-stroke"
             />
@@ -604,6 +565,73 @@ export function MultiLineChart({ buckets, providers, points, formatValue, height
       )}
     </div>
   );
+}
+
+interface OverviewGeometry {
+  buckets: string[];
+  total: number[];
+  harness: Record<string, number[]>;
+  grouping: number;
+}
+
+// Grouping and metric changes share one interruptible morph of normalized values.
+function useOverviewTransition(target: OverviewGeometry): OverviewGeometry {
+  const [geometry, setGeometry] = useState(target);
+  const current = useRef(target);
+
+  useLayoutEffect(() => {
+    if (current.current === target) return;
+
+    const preference = window.matchMedia("(prefers-reduced-motion: reduce)");
+    let frame = 0;
+    const finish = () => {
+      cancelAnimationFrame(frame);
+      current.current = target;
+      setGeometry(target);
+    };
+    if (preference.matches || current.current.buckets.length === 0 || target.buckets.length === 0) {
+      finish();
+      return;
+    }
+
+    const from = current.current;
+    const previousIndices = new Map(from.buckets.map((date, index) => [date, index]));
+    const interpolate = (values: number[], previous: number[] | undefined, eased: number) => values.map((value, index) => {
+      const previousIndex = previousIndices.get(target.buckets[index]);
+      const initial = previousIndex == null ? value : previous?.[previousIndex] ?? from.total[previousIndex] ?? value;
+      return initial + (value - initial) * eased;
+    });
+    const start = performance.now();
+    const animate = (now: number) => {
+      const elapsed = Math.min(1, (now - start) / 360);
+      if (elapsed === 1) {
+        finish();
+        return;
+      }
+      const eased = 1 - Math.pow(1 - elapsed, 4);
+      current.current = {
+        buckets: target.buckets,
+        total: interpolate(target.total, from.total, eased),
+        harness: Object.fromEntries(Object.entries(target.harness).map(([provider, values]) => [
+          provider, interpolate(values, from.harness[provider], eased),
+        ])),
+        grouping: from.grouping + (target.grouping - from.grouping) * eased,
+      };
+      setGeometry(current.current);
+      frame = requestAnimationFrame(animate);
+    };
+    const onPreferenceChange = () => {
+      if (preference.matches) finish();
+    };
+    preference.addEventListener("change", onPreferenceChange);
+    animate(start);
+    return () => {
+      cancelAnimationFrame(frame);
+      preference.removeEventListener("change", onPreferenceChange);
+    };
+  }, [target]);
+
+  return geometry;
 }
 
 function smoothLinePath(points: Array<[number, number]>): string {

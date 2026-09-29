@@ -396,34 +396,14 @@ label { color: var(--fg-2); font-size: 12px; }
 .series-key.series-3 { background: #3d3d3d; }
 .chart-legend button.focused .series-key { background: var(--accent); }
 .chart-legend-slot { min-height: 26px; display: flex; justify-content: flex-end; align-items: center; margin: -4px 0 8px; }
-.overview-legend-enter { animation: legend-in 220ms cubic-bezier(0.16, 1, 0.3, 1) both; }
-.overview-legend-item { animation: legend-item-in 220ms cubic-bezier(0.16, 1, 0.3, 1) both; animation-delay: calc(var(--item-idx, 0) * 35ms); }
-@keyframes legend-in { from { opacity: 0; transform: translateY(-3px); } to { opacity: 1; transform: translateY(0); } }
-@keyframes legend-item-in { from { opacity: 0; transform: scale(.95) translateY(-2px); } to { opacity: 1; transform: scale(1) translateY(0); } }
+.overview-legend { margin: 0; transition: opacity 220ms var(--ease-out), visibility 0s; }
+.mode-total .overview-legend { opacity: 0; visibility: hidden; pointer-events: none; transition-delay: 0s, 220ms; }
+.mode-harness .overview-legend { opacity: 1; visibility: visible; }
 
-.overview-aperture-sweep { animation: aperture-scan 340ms cubic-bezier(0.16, 1, 0.3, 1) forwards; pointer-events: none; }
-@keyframes aperture-scan {
-  0% { transform: translateX(0); opacity: 0; }
-  12% { opacity: 1; }
-  75% { opacity: .9; }
-  100% { transform: translateX(1132px); opacity: 0; }
-}
-
-.overview-signal-group { transition: opacity 220ms cubic-bezier(0.16, 1, 0.3, 1); }
-.overview-signal-group.is-inactive { opacity: 0; pointer-events: none; }
-.overview-signal-group.is-active { opacity: 1; }
-.overview-signal-total.is-active .signal { animation: total-line-in 260ms cubic-bezier(0.16, 1, 0.3, 1) both; }
-.overview-signal-total.is-active .signal-area { animation: total-area-in 260ms cubic-bezier(0.16, 1, 0.3, 1) both; }
-@keyframes total-line-in { from { opacity: .3; } to { opacity: 1; } }
-@keyframes total-area-in { from { opacity: 0; } to { opacity: 1; } }
-
-.overview-signal-harness.is-active .comparison-signal { animation: harness-line-in 280ms cubic-bezier(0.16, 1, 0.3, 1) both; animation-delay: calc(var(--series-idx, 0) * 25ms); }
-.overview-signal-harness.is-active .comparison-area { animation: harness-area-in 280ms cubic-bezier(0.16, 1, 0.3, 1) both; animation-delay: calc(var(--series-idx, 0) * 20ms); }
-@keyframes harness-line-in { from { opacity: .2; } to { opacity: .86; } }
-@keyframes harness-area-in { from { opacity: 0; } to { opacity: .62; } }
-
-.axis-tick-label.animating { animation: tick-fade 180ms cubic-bezier(0.16, 1, 0.3, 1); }
-@keyframes tick-fade { from { opacity: .3; transform: translateY(-2px); } to { opacity: 1; transform: translateY(0); } }
+.overview-chart-layer { transition: opacity 220ms var(--ease-out); }
+.overview-chart-layer.is-inactive { opacity: 0; pointer-events: none; }
+.overview-chart-layer.is-active { opacity: 1; }
+.overview-signal-total, .overview-signal-harness { transition: none; }
 
 .comparison-area { pointer-events: none; opacity: .62; transition: opacity 180ms var(--ease-out); }
 .comparison-area.focused { opacity: 1; }
@@ -865,4 +845,5 @@ table.data tbody tr { transition: background-color var(--duration) ease; }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
+  .overview-chart-layer, .overview-legend { transition: none !important; }
 }

@@ -470,6 +470,7 @@ function toPayload(config: SanitizedConfig): unknown {
       enabled: source.enabled,
     })),
     providerAliases: config.providerAliases,
+    providerBilling: config.providerBilling,
     providerOverrides: config.providerOverrides.map((override) => ({
       harness: override.harness,
       rawProviderId: override.rawProviderId,
