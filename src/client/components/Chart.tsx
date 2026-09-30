@@ -7,7 +7,10 @@ export interface ChartPoint {
 }
 
 export interface OverviewChartProps {
-  grouping: "total" | "harness";
+  grouping: "total" | "harness" | "model";
+  modelData?: OverviewChartProps["harnessData"];
+  modelLimit?: 3 | 5;
+  seriesLabel?: (series: string) => string;
   totalData?: {
     buckets: string[];
     providers: string[];
@@ -38,6 +41,9 @@ export function OverviewChart({
   grouping,
   totalData,
   harnessData,
+  modelData,
+  modelLimit = 3,
+  seriesLabel = (series) => series,
   formatValue,
   height = 410,
   seriesColor,
@@ -75,11 +81,14 @@ export function OverviewChart({
     return { buckets, matrix, dailyTotal, maxTotal, orderedProviders: ordered };
   }, [totalData, harnessData]);
 
-  // Compute Harness metrics
-  const harnessModel = useMemo(() => {
-    const buckets = harnessData?.buckets ?? totalData?.buckets ?? [];
-    const points = harnessData?.points ?? [];
-    const providers = harnessData?.providers ?? [];
+  const comparisonData = grouping === "model" ? modelData : harnessData;
+  const comparisonLimit = grouping === "model" ? modelLimit : 4;
+
+  // Rank comparison series by the selected metric over the entire period
+  const comparisonModel = useMemo(() => {
+    const buckets = comparisonData?.buckets ?? totalData?.buckets ?? [];
+    const points = comparisonData?.points ?? [];
+    const providers = comparisonData?.providers ?? [];
     if (buckets.length === 0 || providers.length === 0 || points.length === 0) return null;
 
     const lookup = new Map<string, number>();
@@ -88,37 +97,41 @@ export function OverviewChart({
       lookup.set(`${point.date}|${point.provider}`, point.value);
       totals.set(point.provider, (totals.get(point.provider) ?? 0) + point.value);
     }
-    const series = [...providers].sort((a, b) => (totals.get(b) ?? 0) - (totals.get(a) ?? 0)).slice(0, 4);
+    const series = [...providers]
+      .filter((provider) => (totals.get(provider) ?? 0) > 0)
+      .sort((a, b) => (totals.get(b) ?? 0) - (totals.get(a) ?? 0))
+      .slice(0, comparisonLimit);
     const matrix = series.map((provider) => buckets.map((date) => lookup.get(`${date}|${provider}`) ?? 0));
     const maxValue = Math.max(1, ...matrix.flat());
     return { buckets, ordered: series, values: matrix, maxValue };
-  }, [harnessData, totalData]);
+  }, [comparisonData, totalData, comparisonLimit]);
 
-  const isHarness = grouping === "harness" && harnessModel != null;
+  const isComparison = grouping !== "total";
   const targetGeometry = useMemo(() => {
-    const buckets = (isHarness ? harnessModel?.buckets : totalModel?.buckets) ?? totalModel?.buckets ?? harnessModel?.buckets ?? [];
+    const buckets = (isComparison ? comparisonModel?.buckets : totalModel?.buckets) ?? totalModel?.buckets ?? comparisonModel?.buckets ?? [];
     const totalByDate = new Map(totalModel?.buckets.map((date, index) => [date, totalModel.dailyTotal[index]]) ?? []);
     const total = buckets.map((date) => (totalByDate.get(date) ?? 0) / (totalModel?.maxTotal ?? 1));
-    const harness = Object.fromEntries(harnessModel?.ordered.map((provider, index) => [
+    const harness = Object.fromEntries(comparisonModel?.ordered.map((provider, index) => [
       provider,
-      buckets.map((_, pointIndex) => isHarness ? harnessModel.values[index][pointIndex] / harnessModel.maxValue : total[pointIndex]),
+      buckets.map((_, pointIndex) => isComparison ? comparisonModel.values[index][pointIndex] / comparisonModel.maxValue : total[pointIndex]),
     ]) ?? []);
-    return { buckets, total, harness, grouping: isHarness ? 1 : 0 };
-  }, [totalModel, harnessModel, isHarness]);
+    return { buckets, total, harness, grouping: isComparison ? 1 : 0 };
+  }, [totalModel, comparisonModel, isComparison]);
   const geometry = useOverviewTransition(targetGeometry);
   const buckets = targetGeometry.buckets;
 
-  if (buckets.length === 0 || (!totalModel && !harnessModel)) {
+  if (buckets.length === 0 || (isComparison ? !comparisonModel : !totalModel)) {
     return <div className="empty chart-empty">No observations in this period.</div>;
   }
 
   const x = (index: number) => padL + (buckets.length <= 1 ? plotW / 2 : (index / (buckets.length - 1)) * plotW);
   const yTotal = (index: number) => padT + plotH * (1 - (geometry.total[index] ?? 0));
-  const yHarness = (provider: string, index: number) => padT + plotH * (1 - (geometry.harness[provider]?.[index] ?? 0));
+  const yComparison = (provider: string, index: number) => padT + plotH * (1 - (geometry.harness[provider]?.[index] ?? 0));
 
   const tickFractions = [0, 0.25, 0.5, 0.75, 1];
   const labelStep = Math.max(1, Math.ceil(buckets.length / 5));
-  const focusedProvider = hoveredProvider ?? selectedProvider;
+  const focusedCandidate = hoveredProvider ?? selectedProvider;
+  const focusedProvider = focusedCandidate && comparisonModel?.ordered.includes(focusedCandidate) ? focusedCandidate : null;
 
   // Pre-calculate paths
   const baseline = (padT + plotH).toFixed(1);
@@ -129,9 +142,9 @@ export function OverviewChart({
     ? `${totalPath} L${totalPoints.at(-1)?.[0].toFixed(1)},${baseline} L${totalPoints[0][0].toFixed(1)},${baseline} Z`
     : "";
 
-  const harnessSeriesData = harnessModel
-    ? harnessModel.ordered.map((provider) => {
-        const linePoints = buckets.map((_, pointIndex) => [x(pointIndex), yHarness(provider, pointIndex)] as [number, number]);
+  const comparisonSeriesData = comparisonModel
+    ? comparisonModel.ordered.map((provider) => {
+        const linePoints = buckets.map((_, pointIndex) => [x(pointIndex), yComparison(provider, pointIndex)] as [number, number]);
         const path = smoothLinePath(linePoints);
         const areaPath = linePoints.length > 0
           ? `${path} L${linePoints.at(-1)?.[0].toFixed(1)},${baseline} L${linePoints[0][0].toFixed(1)},${baseline} Z`
@@ -140,24 +153,24 @@ export function OverviewChart({
       })
     : [];
 
-  const hoverY = hover == null ? 0 : isHarness && harnessModel
-    ? focusedProvider ? yHarness(focusedProvider, hover) : Math.min(...harnessModel.ordered.map((provider) => yHarness(provider, hover)))
+  const hoverY = hover == null ? 0 : isComparison && comparisonModel
+    ? focusedProvider ? yComparison(focusedProvider, hover) : Math.min(...comparisonModel.ordered.map((provider) => yComparison(provider, hover)))
     : yTotal(hover);
 
   return (
-    <div className={`telemetry-chart overview-chart-container ${isHarness ? "comparison-chart mode-harness" : "mode-total"}`}>
+    <div className={`telemetry-chart overview-chart-container ${isComparison ? `comparison-chart mode-${grouping}` : "mode-total"}`}>
       <div className="chart-legend-slot">
         <div
           className="chart-legend overview-legend"
-          aria-hidden={!isHarness}
+          aria-hidden={!isComparison}
         >
-          {harnessModel?.ordered.map((provider, index) => (
+          {comparisonModel?.ordered.map((provider, index) => (
             <button
               type="button"
-              key={provider}
+              key={seriesLabel(provider)}
               className={focusedProvider === provider ? "focused" : ""}
               aria-pressed={selectedProvider === provider}
-              tabIndex={isHarness ? 0 : -1}
+              tabIndex={isComparison ? 0 : -1}
               onMouseEnter={() => setHoveredProvider(provider)}
               onMouseLeave={() => setHoveredProvider(null)}
               onFocus={() => setHoveredProvider(provider)}
@@ -168,7 +181,7 @@ export function OverviewChart({
                 className={`series-key series-${index}`}
                 style={seriesColor ? { background: seriesColor(provider, index) } : undefined}
               />
-              {provider}
+              {seriesLabel(provider)}
             </button>
           ))}
         </div>
@@ -178,7 +191,7 @@ export function OverviewChart({
         className="chart"
         viewBox={`0 0 ${width} ${height}`}
         role="img"
-        aria-label={isHarness ? "Harness usage comparison over time" : "Usage over time"}
+        aria-label={isComparison ? grouping === "model" ? "Model usage comparison over time" : "Harness usage comparison over time" : "Usage over time"}
         onMouseLeave={() => {
           setHover(null);
           setHoveredProvider(null);
@@ -190,11 +203,11 @@ export function OverviewChart({
           const pointIndex = Math.max(0, Math.min(buckets.length - 1, Math.round(((pointerX - padL) / plotW) * (buckets.length - 1))));
           setHover(pointIndex);
 
-          if (isHarness && harnessModel) {
-            const nearest = harnessModel.ordered.reduce((nearestProvider, provider) => {
+          if (isComparison && comparisonModel) {
+            const nearest = comparisonModel.ordered.reduce((nearestProvider, provider) => {
               if (nearestProvider == null) return provider;
-              const currentDist = Math.abs(yHarness(provider, pointIndex) - pointerY);
-              const nearestDist = Math.abs(yHarness(nearestProvider, pointIndex) - pointerY);
+              const currentDist = Math.abs(yComparison(provider, pointIndex) - pointerY);
+              const nearestDist = Math.abs(yComparison(nearestProvider, pointIndex) - pointerY);
               return currentDist < nearestDist ? provider : nearestProvider;
             }, null as string | null);
             setHoveredProvider(nearest);
@@ -209,7 +222,7 @@ export function OverviewChart({
             <stop offset="100%" stopColor="#afcbff" stopOpacity="0.01" />
           </linearGradient>
 
-          {harnessModel?.ordered.map((provider, index) => {
+          {comparisonModel?.ordered.map((provider, index) => {
             const color = seriesColor?.(provider, index) ?? ["#8498bb", "#a2a2a2", "#6a6a6a", "#454545"][index];
             return (
               <linearGradient id={`${gradientPrefix}-area-${index}`} key={provider} x1="0" y1="0" x2="0" y2="1">
@@ -230,8 +243,8 @@ export function OverviewChart({
         <g className="axis">
           {/* Each scale fades with its data; the grid and dates stay fixed. */}
           {[
-            { mode: "total", max: totalModel?.maxTotal ?? 1, active: !isHarness },
-            { mode: "harness", max: harnessModel?.maxValue ?? 1, active: isHarness },
+            { mode: "total", max: totalModel?.maxTotal ?? 1, active: !isComparison },
+            { mode: "harness", max: comparisonModel?.maxValue ?? 1, active: isComparison },
           ].map(({ mode, max, active }) => (
             <g key={mode} className={`overview-chart-layer ${active ? "is-active" : "is-inactive"}`} aria-hidden={!active}>
               {tickFractions.map((fraction) => (
@@ -258,9 +271,9 @@ export function OverviewChart({
         {/* Total Signal Layer */}
         <g
           className={`overview-chart-layer overview-signal-total ${
-            !isHarness ? "is-active" : "is-inactive"
+            !isComparison ? "is-active" : "is-inactive"
           }`}
-          aria-hidden={isHarness}
+          aria-hidden={isComparison}
           style={{ opacity: 1 - geometry.grouping }}
         >
           {totalAreaPath && <path className="signal-area" d={totalAreaPath} fill="url(#signal-area-gradient)" />}
@@ -270,12 +283,12 @@ export function OverviewChart({
         {/* Harness Multi-Line Layer */}
         <g
           className={`overview-chart-layer overview-signal-harness ${
-            isHarness ? "is-active" : "is-inactive"
+            isComparison ? "is-active" : "is-inactive"
           }`}
-          aria-hidden={!isHarness}
+          aria-hidden={!isComparison}
           style={{ opacity: geometry.grouping }}
         >
-          {harnessSeriesData.map(({ provider, areaPath }, index) => (
+          {comparisonSeriesData.map(({ provider, areaPath }, index) => (
             <path
               key={`${provider}-area`}
               className={`comparison-area ${focusedProvider === provider ? "focused" : focusedProvider ? "subdued" : ""}`}
@@ -283,9 +296,9 @@ export function OverviewChart({
               fill={`url(#${gradientPrefix}-area-${index})`}
             />
           ))}
-          {harnessSeriesData.map(({ provider, path }, index) => (
+          {comparisonSeriesData.map(({ provider, path }, index) => (
             <path
-              key={provider}
+              key={seriesLabel(provider)}
               className={`comparison-signal series-${index} ${
                 focusedProvider === provider ? "focused" : focusedProvider ? "subdued" : ""
               }`}
@@ -300,14 +313,14 @@ export function OverviewChart({
         {hover != null && (
           <g className="crosshair">
             <line x1={x(hover)} x2={x(hover)} y1={padT} y2={padT + plotH} vectorEffect="non-scaling-stroke" />
-            {!isHarness && <circle cx={x(hover)} cy={hoverY} r="3.5" vectorEffect="non-scaling-stroke" />}
+            {!isComparison && <circle cx={x(hover)} cy={hoverY} r="3.5" vectorEffect="non-scaling-stroke" />}
           </g>
         )}
       </svg>
 
       {/* Tooltip */}
       {hover != null && (
-        !isHarness ? (
+        !isComparison ? (
           totalModel && (
             <div
               className="tip"
@@ -340,7 +353,7 @@ export function OverviewChart({
             </div>
           )
         ) : (
-          harnessModel && (
+          comparisonModel && (
             <div
               className="tip comparison-tip"
               style={{
@@ -350,13 +363,13 @@ export function OverviewChart({
               }}
             >
               <div className="t-date">{fmtFullDay(buckets[hover])}</div>
-              {harnessModel.ordered.map((provider, index) => (
+              {comparisonModel.ordered.map((provider, index) => (
                 <div key={provider} className={`t-row ${focusedProvider === provider ? "focused" : ""}`}>
                   <span className="t-series-label">
                     {seriesColor && <i style={{ background: seriesColor(provider, index) }} />}
-                    {provider}
+                    {seriesLabel(provider)}
                   </span>
-                  <span>{formatValue(harnessModel.values[index][hover])}</span>
+                  <span>{formatValue(comparisonModel.values[index][hover])}</span>
                 </div>
               ))}
             </div>

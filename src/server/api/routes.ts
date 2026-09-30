@@ -50,7 +50,7 @@ export function registerApi(app: FastifyInstance, state: AppState): void {
   app.get("/api/v1/timeseries", async (req) => {
     const q = req.query as Record<string, unknown>;
     const metric = (typeof q.metric === "string" ? q.metric : "processedTokens") as TimeseriesMetric;
-    const groupBy = (q.groupBy === "harness" ? "harness" : "provider") as TimeseriesGroupBy;
+    const groupBy = (q.groupBy === "harness" || q.groupBy === "model" ? q.groupBy : "provider") as TimeseriesGroupBy;
     return analytics.timeseries(parseFilters(q), metric, groupBy);
   });
 

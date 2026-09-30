@@ -43,7 +43,7 @@ import type {
 
 export interface TimeseriesResponse {
   metric: string;
-  groupBy: "provider" | "harness";
+  groupBy: "provider" | "harness" | "model";
   buckets: string[];
   providers: string[];
   points: { date: string; provider: string; value: number }[];
@@ -55,7 +55,7 @@ export const api = {
   sync: () => jsonFetch<SyncTriggerResponse>("/api/v1/sync", { method: "POST" }),
   syncRun: (id: string) => jsonFetch<SyncRunInfo | null>(`/api/v1/sync/${id}`),
   dimensions: () => jsonFetch<DimensionLists>("/api/v1/dimensions"),
-  timeseries: (filters: RangeFilters, metric: string, groupBy: "provider" | "harness" = "provider") =>
+  timeseries: (filters: RangeFilters, metric: string, groupBy: "provider" | "harness" | "model" = "provider") =>
     jsonFetch<TimeseriesResponse>(`/api/v1/timeseries?${qs({ ...filters, metric, groupBy } as Record<string, unknown>)}`),
   summary: (filters: RangeFilters) =>
     jsonFetch<SummaryResponse>(`/api/v1/summary?${qs(filters as Record<string, unknown>)}`),

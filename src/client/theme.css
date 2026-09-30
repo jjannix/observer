@@ -298,6 +298,8 @@ label { color: var(--fg-2); font-size: 12px; }
 }
 .chart-group-indicator[data-active="total"] { transform: translateX(2px); width: 46px; }
 .chart-group-indicator[data-active="harness"] { transform: translateX(50px); width: 74px; }
+.chart-group-indicator[data-active="model"] { transform: translateX(125px); width: 60px; }
+.chart-group-toggle.model-limit-toggle button.active { background: var(--bg-3); box-shadow: inset 0 0 0 1px var(--border); }
 .chart-group-toggle button {
   position: relative;
   z-index: 1;
@@ -395,10 +397,11 @@ label { color: var(--fg-2); font-size: 12px; }
 .series-key.series-2 { background: #737373; }
 .series-key.series-3 { background: #3d3d3d; }
 .chart-legend button.focused .series-key { background: var(--accent); }
+.overview-legend { flex-wrap: wrap; }
 .chart-legend-slot { min-height: 26px; display: flex; justify-content: flex-end; align-items: center; margin: -4px 0 8px; }
 .overview-legend { margin: 0; transition: opacity 220ms var(--ease-out), visibility 0s; }
 .mode-total .overview-legend { opacity: 0; visibility: hidden; pointer-events: none; transition-delay: 0s, 220ms; }
-.mode-harness .overview-legend { opacity: 1; visibility: visible; }
+.mode-harness .overview-legend, .mode-model .overview-legend { opacity: 1; visibility: visible; }
 
 .overview-chart-layer { transition: opacity 220ms var(--ease-out); }
 .overview-chart-layer.is-inactive { opacity: 0; pointer-events: none; }
@@ -699,7 +702,7 @@ table.data tbody tr { transition: background-color var(--duration) ease; }
 @keyframes pop-in { from { opacity: 0; transform: scale(.97); } to { opacity: 1; transform: scale(1); } }
 
 @media (max-width: 1100px) {
-  .overview-page { grid-template-columns: 1fr; }
+  .overview-page { grid-template-columns: minmax(0, 1fr); }
   .overview-page > .composition-section, .overview-page > .models-section { grid-column: 1; }
   .overview-page > .composition-section .comp-legend { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }

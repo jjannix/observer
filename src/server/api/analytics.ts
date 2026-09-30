@@ -35,7 +35,7 @@ export type TimeseriesMetric =
   | "cacheReadInputTokens"
   | "costUsd"
   | "requests";
-export type TimeseriesGroupBy = "provider" | "harness";
+export type TimeseriesGroupBy = "provider" | "harness" | "model";
 
 const MIN_COMPARABLE_PROVIDER_INPUT_TOKENS = 1_000_000;
 const MIN_COMPARABLE_PROVIDER_SHARE = 0.05;
@@ -621,7 +621,9 @@ export class Analytics {
    */
   timeseries(filters: RangeFilters, metric: TimeseriesMetric, groupBy: TimeseriesGroupBy = "provider", timezone = "Europe/Berlin"): TimeseriesResponse {
     const { sql, params } = buildWhere(this.db, filters);
-    const dimension = groupBy === "harness" ? "e.harness" : "COALESCE(e.canonical_provider_id, 'unknown')";
+    const dimension = groupBy === "harness" ? "e.harness"
+      : groupBy === "model" ? "COALESCE(e.canonical_model_id, e.raw_model_id, 'unknown')"
+      : "COALESCE(e.canonical_provider_id, 'unknown')";
     const rows = this.db
       .prepare(
         `SELECT e.occurred_at, ${dimension} AS provider,
@@ -644,6 +646,7 @@ export class Analytics {
       if (maxDate === null || day > maxDate) maxDate = day;
       const series = groupBy === "harness"
         ? r.provider
+        : groupBy === "model" ? (canonicalizeModelId(r.provider) ?? r.provider)
         : (r.provider === "unknown" ? "unknown" : (canonicalizeProviderId(r.provider) ?? r.provider));
       seriesKeys.add(series);
       const key = `${day}|${series}`;

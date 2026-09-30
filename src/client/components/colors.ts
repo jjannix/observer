@@ -70,3 +70,8 @@ function hash(s: string): number {
 export function resetColors(): void {
   assigned.clear();
 }
+
+/** Distinct colors for each ranked model in the overview comparison. */
+export function colorForModel(_model: string, index: number): string {
+  return PALETTE[index % PALETTE.length];
+}

@@ -452,6 +452,28 @@ describe("HTTP API", () => {
     const total = ts.points.reduce((sum: number, p: any) => sum + p.value, 0);
     expect(total).toBe(300);
 
+    // Model grouping merges historical spellings into one series and honors filters.
+    const modelSeriesRes = await app.inject({
+      method: "GET", url: "/api/v1/timeseries?metric=processedTokens&groupBy=model",
+    });
+    expect(modelSeriesRes.statusCode).toBe(200);
+    expect(modelSeriesRes.json()).toMatchObject({
+      groupBy: "model",
+      providers: ["google/gemini-3.7-flash", "openai/gpt-5.6-luna"],
+      points: [
+        { date: "2025-01-01", provider: "google/gemini-3.7-flash", value: 1_000 },
+        { date: "2025-01-01", provider: "openai/gpt-5.6-luna", value: 300 },
+      ],
+    });
+    const filteredModelSeries = await app.inject({
+      method: "GET",
+      url: "/api/v1/timeseries?metric=requests&groupBy=model&model=" + encodeURIComponent("openai/gpt-5.6-luna"),
+    });
+    expect(filteredModelSeries.json()).toMatchObject({
+      providers: ["openai/gpt-5.6-luna"],
+      points: [{ date: "2025-01-01", provider: "openai/gpt-5.6-luna", value: 2 }],
+    });
+
     // Unrelated model filter stays isolated.
     const otherRes = await app.inject({
       method: "GET",

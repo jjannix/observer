@@ -4,7 +4,7 @@ import { Link } from "react-router-dom";
 import { api, rangeToFilters } from "../api.js";
 import { CHART_METRICS, FiltersBar, useFilterState, type FilterState } from "../components/Filters.js";
 import { OverviewChart } from "../components/Chart.js";
-import { colorForHarness, harnessLabel } from "../components/colors.js";
+import { colorForHarness, colorForModel, harnessLabel } from "../components/colors.js";
 import { MetricSelect } from "../components/MetricSelect.js";
 import { CompositionBar, COLORS, fmtCompact, fmtCompactPrecise, fmtInt, fmtPct, fmtUsd } from "../components/ui.js";
 
@@ -20,7 +20,8 @@ const METRIC_FORMATTER: Record<string, (value: number) => string> = {
 
 export function Overview() {
   const [filters, setFilters] = useFilterState();
-  const [chartGrouping, setChartGrouping] = useState<"total" | "harness">("total");
+  const [chartGrouping, setChartGrouping] = useState<ChartGrouping>("total");
+  const [modelLimit, setModelLimit] = useState<3 | 5>(3);
 
   const range = useMemo(() => {
     const { from, to } = rangeToFilters(filters.range, "Europe/Berlin");
@@ -58,11 +59,12 @@ export function Overview() {
   const { data: chartData, isLoading: isChartLoading, isFetching: isChartUpdating } = useQuery({
     queryKey: ["timeseries", "overview", range, chartMetric],
     queryFn: async () => {
-      const [total, harness] = await Promise.all([
+      const [total, harness, model] = await Promise.all([
         api.timeseries(range, chartMetric, "provider"),
         api.timeseries(range, chartMetric, "harness"),
+        api.timeseries(range, chartMetric, "model"),
       ]);
-      return { total, harness, metric: chartMetric };
+      return { total, harness, model, metric: chartMetric };
     },
     placeholderData: keepPreviousData,
   });
@@ -120,11 +122,21 @@ export function Overview() {
           <div>
             <h2>Usage over time</h2>
             <span className="hint mode-hint" key={chartGrouping}>
-              {chartGrouping === "harness" ? "Daily harness comparison" : "Daily observations"} · {rangeLabel(filters.range)}
+              {chartGrouping === "harness" ? "Daily harness comparison" : chartGrouping === "model" ? `Top ${modelLimit} models by ${CHART_METRICS.find((metric) => metric.id === chartMetric)?.label.toLowerCase() ?? chartMetric}` : "Daily observations"} · {rangeLabel(filters.range)}
             </span>
           </div>
           <div className="chart-controls">
             <ChartGroupToggle value={chartGrouping} onChange={setChartGrouping} />
+            {chartGrouping === "model" && (
+              <div className="chart-group-toggle model-limit-toggle" role="group" aria-label="Number of top models">
+                {([3, 5] as const).map((limit) => (
+                  <button key={limit} type="button" className={modelLimit === limit ? "active" : ""}
+                    aria-pressed={modelLimit === limit} onClick={() => setModelLimit(limit)}>
+                    Top {limit}
+                  </button>
+                ))}
+              </div>
+            )}
             <MetricSelect
               value={chartMetric}
               options={CHART_METRICS}
@@ -139,9 +151,12 @@ export function Overview() {
             grouping={chartGrouping}
             totalData={chartData?.total}
             harnessData={harnessChart}
+            modelData={chartData?.model}
+            modelLimit={modelLimit}
             formatValue={METRIC_FORMATTER[chartData?.metric ?? chartMetric] ?? fmtCompact}
             height={410}
-            seriesColor={colorForHarness}
+            seriesColor={chartGrouping === "model" ? colorForModel : colorForHarness}
+            seriesLabel={chartGrouping === "model" ? (id) => dims?.models.find((model) => model.id === id)?.display ?? id : undefined}
           />
         )}
       </section>
@@ -191,20 +206,23 @@ export function Overview() {
   );
 }
 
+type ChartGrouping = "total" | "harness" | "model";
+
 function ChartGroupToggle({
   value,
   onChange,
 }: {
-  value: "total" | "harness";
-  onChange: (val: "total" | "harness") => void;
+  value: ChartGrouping;
+  onChange: (val: ChartGrouping) => void;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const totalBtnRef = useRef<HTMLButtonElement>(null);
   const harnessBtnRef = useRef<HTMLButtonElement>(null);
+  const modelBtnRef = useRef<HTMLButtonElement>(null);
   const [indicatorStyle, setIndicatorStyle] = useState<{ left: number; width: number } | null>(null);
 
   const updateIndicator = useCallback(() => {
-    const activeBtn = value === "total" ? totalBtnRef.current : harnessBtnRef.current;
+    const activeBtn = value === "total" ? totalBtnRef.current : value === "harness" ? harnessBtnRef.current : modelBtnRef.current;
     if (activeBtn && containerRef.current) {
       const containerRect = containerRef.current.getBoundingClientRect();
       const btnRect = activeBtn.getBoundingClientRect();
@@ -253,6 +271,10 @@ function ChartGroupToggle({
         onClick={() => onChange("harness")}
       >
         Harnesses
+      </button>
+      <button ref={modelBtnRef} type="button" className={value === "model" ? "active" : ""}
+        aria-pressed={value === "model"} onClick={() => onChange("model")}>
+        Models
       </button>
     </div>
   );

@@ -28,6 +28,45 @@ test.describe("Observer UI", () => {
     await expect(page.getByRole("button", { name: /sync now/i }).first()).toBeVisible();
   });
 
+  test("overview compares the top 3 or 5 models by the selected metric", async ({ page }) => {
+    const models = ["model-a", "model-b", "model-c", "model-d", "model-e", "model-f"];
+    await page.route("**/api/v1/timeseries?**", (route) => {
+      const query = new URL(route.request().url()).searchParams;
+      const providers = query.get("groupBy") === "model" ? models : ["codex"];
+      const values = query.get("metric") === "requests" ? [60, 50, 40, 30, 20, 10] : [10, 20, 30, 40, 50, 60];
+      return route.fulfill({ json: {
+        metric: query.get("metric"), groupBy: query.get("groupBy"),
+        buckets: ["2026-09-01", "2026-09-02"], providers,
+        points: providers.flatMap((provider, index) => [
+          { date: "2026-09-01", provider, value: values[index] },
+          { date: "2026-09-02", provider, value: values[index] * 2 },
+        ]),
+      } });
+    });
+    await page.goto("/");
+    await page.getByRole("button", { name: "Models", exact: true }).click();
+    const legend = page.locator(".usage-section .overview-legend button");
+    await expect(legend).toHaveText(["model-f", "model-e", "model-d"]);
+    await expect(page.getByRole("img", { name: "Model usage comparison over time" })).toBeVisible();
+    await page.getByRole("button", { name: "Top 5", exact: true }).click();
+    await expect(legend).toHaveText(["model-f", "model-e", "model-d", "model-c", "model-b"]);
+    await expect(page.locator(".usage-section .comparison-signal")).toHaveCount(5);
+    await legend.first().click();
+    await expect(legend.first()).toHaveAttribute("aria-pressed", "true");
+    await page.getByLabel("Chart metric").click();
+    await page.getByRole("option", { name: "Requests", exact: true }).click();
+    await expect(legend).toHaveText(["model-a", "model-b", "model-c", "model-d", "model-e"]);
+    await page.getByRole("button", { name: "Harnesses", exact: true }).click();
+    await expect(page.getByRole("group", { name: "Number of top models" })).toHaveCount(0);
+    await page.getByRole("button", { name: "Models", exact: true }).click();
+    await expect(page.getByRole("button", { name: "Top 5", exact: true })).toHaveAttribute("aria-pressed", "true");
+    await page.getByRole("button", { name: "Top 3", exact: true }).click();
+    await expect(legend).toHaveText(["model-a", "model-b", "model-c"]);
+    await page.setViewportSize({ width: 375, height: 812 });
+    await expect(page.getByRole("button", { name: "Top 5", exact: true })).toBeVisible();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  });
+
   test("observation filters persist across reloads", async ({ page }) => {
     await page.route("**/api/v1/dimensions", (route) => route.fulfill({
       json: { harnesses: ["codex"], providers: [], models: [], projects: [] },
