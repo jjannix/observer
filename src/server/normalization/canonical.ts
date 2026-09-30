@@ -82,7 +82,7 @@ export function modelOwner(rawModel: string | null): string | null {
   if (/^gpt-\d/.test(family) || /^o\d/.test(family)) return "openai";
   if (/^gemini-\d/.test(family)) return "google";
   if (/^deepseek-/.test(family)) return "deepseek";
-  if (/^grok-\d/.test(family)) return "x-ai";
+  if (/^grok-\d/.test(family) || family.startsWith("grok-code")) return "x-ai";
   if (/^minimax-/.test(family)) return "minimax";
   if (/^llama-\d/.test(family) || /^muse(-|_|$)/.test(family)) return "meta";
   return OWNER_BY_MODEL[family] ?? OWNER_BY_MODEL[cleaned] ?? null;
@@ -214,12 +214,13 @@ export function hashId(namespace: string, key: string): string {
 /**
  * Resolution result for provider/model with precedence.
  *
- * Precedence: user-override > seed-alias > deterministic > unknown.
+ * Precedence: user-override > seed-alias > deterministic > model-owner >
+ * unknown.
  */
 export interface DimensionResolution {
   rawProviderId: string | null;
   canonicalProviderId: string | null;
-  providerResolution: "source" | "seed-alias" | "user-override" | "unknown";
+  providerResolution: "source" | "seed-alias" | "user-override" | "model-owner" | "unknown";
   rawModelId: string | null;
   canonicalModelId: string | null;
   modelResolution: "source" | "seed-alias" | "user-override" | "unknown";
@@ -273,6 +274,13 @@ export function resolveDimensions(params: {
     providerResolution = "user-override";
   } else if (detProvider && detProvider !== (rawProviderId ?? "").toLowerCase()) {
     providerResolution = "seed-alias";
+  } else if (!detProvider && detOwner) {
+    // The source reported no provider (Claude Code transcripts never carry
+    // one; Cursor events can lack both). Attribute the company serving the
+    // model — GLM ids only resolve to Z.AI, Claude ids to Anthropic — rather
+    // than losing the provider dimension to "unknown".
+    canonicalProviderId = detOwner;
+    providerResolution = "model-owner";
   }
 
   // Model: seed alias overrides deterministic canonical when present.

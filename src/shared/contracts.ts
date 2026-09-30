@@ -7,6 +7,7 @@ export const PROVIDER_RESOLUTIONS = [
   "source",
   "seed-alias",
   "user-override",
+  "model-owner",
   "unknown",
 ] as const;
 export type ProviderResolution = (typeof PROVIDER_RESOLUTIONS)[number];

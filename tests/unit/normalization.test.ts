@@ -257,9 +257,100 @@ describe("Claude model ownership", () => {
       providerOverrides: [],
       modelAliases: SEED_MODEL_ALIASES,
     });
-    expect(dims.canonicalProviderId).toBeNull();
+    expect(dims.canonicalProviderId).toBe("anthropic");
+    expect(dims.providerResolution).toBe("model-owner");
     expect(dims.owner).toBe("anthropic");
     expect(dims.canonicalModelId).toBe("anthropic/claude-opus-4-6-20260801");
+  });
+});
+
+describe("provider attribution from model owner", () => {
+  it("attributes providerless GLM traffic to Z.AI across point releases", () => {
+    // Claude Code transcripts carry no provider; the model id is the only
+    // attribution signal. New point releases must not fall back to unknown.
+    for (const model of ["glm-5.2", "glm-5.3", "glm-5.3-flash"]) {
+      const dims = resolveDimensions({
+        harness: "claude-code",
+        rawProviderId: null,
+        rawModelId: model,
+        cwd: null,
+        occurredAt: "2026-09-13T00:00:00Z",
+        providerAliases: SEED_PROVIDER_ALIASES,
+        providerOverrides: [],
+        modelAliases: SEED_MODEL_ALIASES,
+      });
+      expect(dims.canonicalProviderId).toBe("zai");
+      expect(dims.providerResolution).toBe("model-owner");
+      expect(dims.canonicalModelId).toBe(`zai/${model}`);
+    }
+  });
+
+  it("recognizes xAI's grok-code family", () => {
+    const dims = resolveDimensions({
+      harness: "cursor",
+      rawProviderId: null,
+      rawModelId: "grok-code-fast-1",
+      cwd: null,
+      occurredAt: "2026-09-13T00:00:00Z",
+      providerAliases: SEED_PROVIDER_ALIASES,
+      providerOverrides: [],
+      modelAliases: SEED_MODEL_ALIASES,
+    });
+    expect(dims.canonicalProviderId).toBe("x-ai");
+    expect(dims.providerResolution).toBe("model-owner");
+  });
+
+  it("keeps unknown attribution when the model family is unrecognized", () => {
+    // Cursor's in-house model has no external serving company to attribute.
+    const dims = resolveDimensions({
+      harness: "cursor",
+      rawProviderId: null,
+      rawModelId: "composer-2.5",
+      cwd: null,
+      occurredAt: "2026-09-13T00:00:00Z",
+      providerAliases: SEED_PROVIDER_ALIASES,
+      providerOverrides: [],
+      modelAliases: SEED_MODEL_ALIASES,
+    });
+    expect(dims.canonicalProviderId).toBeNull();
+    expect(dims.providerResolution).toBe("unknown");
+
+    const noModel = resolveDimensions({
+      harness: "claude-code",
+      rawProviderId: null,
+      rawModelId: null,
+      cwd: null,
+      occurredAt: "2026-09-13T00:00:00Z",
+      providerAliases: SEED_PROVIDER_ALIASES,
+      providerOverrides: [],
+      modelAliases: SEED_MODEL_ALIASES,
+    });
+    expect(noModel.canonicalProviderId).toBeNull();
+    expect(noModel.providerResolution).toBe("unknown");
+  });
+
+  it("prefers a user override over the model-owner fallback", () => {
+    const dims = resolveDimensions({
+      harness: "claude-code",
+      rawProviderId: null,
+      rawModelId: "glm-5.3",
+      cwd: null,
+      occurredAt: "2026-09-13T00:00:00Z",
+      providerAliases: SEED_PROVIDER_ALIASES,
+      providerOverrides: [
+        {
+          harness: "claude-code",
+          rawProviderId: null,
+          rawModelId: "glm-5.3",
+          canonicalProviderId: "zai-gateway",
+          from: null,
+          to: null,
+        },
+      ],
+      modelAliases: SEED_MODEL_ALIASES,
+    });
+    expect(dims.canonicalProviderId).toBe("zai-gateway");
+    expect(dims.providerResolution).toBe("user-override");
   });
 });
 

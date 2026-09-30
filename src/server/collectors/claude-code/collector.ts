@@ -163,6 +163,8 @@ export class ClaudeCodeCollector implements Collector {
         projectId: null,
         // The transcript identifies the model but not the delivery provider
         // (Anthropic, Bedrock, Vertex, Foundry, or a custom gateway).
+        // Normalization falls back to attributing the model owner so traffic
+        // still lands on a known provider.
         rawProviderId: null,
         rawModelId: model === "<synthetic>" ? null : model,
         cwd: stringValue(record.cwd) ?? state.cwd,
