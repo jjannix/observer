@@ -295,6 +295,34 @@ describe("HTTP API", () => {
     expect(ok.statusCode).toBe(202);
   });
 
+  it("cache hit timeseries uses summed tokens and retains genuine zero rates", async () => {
+    const insert = state.raw.prepare(
+      `INSERT INTO usage_events
+       (id, harness, occurred_at, logical_session_id, request_id, canonical_provider_id,
+        processed_input_tokens, cache_read_input_tokens, processed_tokens)
+       VALUES (?, ?, '2025-01-01T00:00:00Z', ?, ?, ?, ?, ?, ?)`,
+    );
+    insert.run("rate-1", "pi", "s1", "r1", "openai", 100, 90, 100);
+    insert.run("rate-2", "pi", "s2", "r2", "openai", 900, 0, 900);
+    insert.run("rate-3", "codex", "s3", "r3", "google", 200, 0, 200);
+    insert.run("rate-4", "cursor", "s4", "r4", "anthropic", 0, 0, 0);
+    const response = await app.inject({ method: "GET", url: "/api/v1/timeseries?metric=cacheHitRate" });
+    expect(response.statusCode).toBe(200);
+    expect(response.json().points).toEqual([
+      { date: "2025-01-01", provider: "google", value: 0, inputTokens: 200 },
+      { date: "2025-01-01", provider: "openai", value: 0.09, inputTokens: 1_000 },
+    ]);
+    const harness = await app.inject({ method: "GET", url: "/api/v1/timeseries?metric=cacheHitRate&groupBy=harness" });
+    expect(harness.json().points).toEqual([
+      { date: "2025-01-01", provider: "codex", value: 0, inputTokens: 200 },
+      { date: "2025-01-01", provider: "pi", value: 0.09, inputTokens: 1_000 },
+    ]);
+    const model = await app.inject({ method: "GET", url: "/api/v1/timeseries?metric=cacheHitRate&groupBy=model&harness=pi" });
+    expect(model.json().points).toEqual([
+      { date: "2025-01-01", provider: "unknown", value: 0.09, inputTokens: 1_000 },
+    ]);
+  });
+
   it("read-time canonicalization merges stale provider rows in dimensions, timeseries, and summary", async () => {
     const insert = state.raw.prepare(
       `INSERT INTO usage_events

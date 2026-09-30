@@ -13,6 +13,7 @@ const METRIC_FORMATTER: Record<string, (value: number) => string> = {
   processedInputTokens: fmtCompact,
   freshInputTokens: fmtCompact,
   cacheReadInputTokens: fmtCompact,
+  cacheHitRate: fmtPct,
   outputTokens: fmtCompact,
   costUsd: (value) => fmtUsd(value / 1e9),
   requests: fmtCompact,
@@ -149,6 +150,7 @@ export function Overview() {
         ) : (
           <OverviewChart
             grouping={chartGrouping}
+            isRate={(chartData?.metric ?? chartMetric) === "cacheHitRate"}
             totalData={chartData?.total}
             harnessData={harnessChart}
             modelData={chartData?.model}

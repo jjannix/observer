@@ -46,7 +46,7 @@ export interface TimeseriesResponse {
   groupBy: "provider" | "harness" | "model";
   buckets: string[];
   providers: string[];
-  points: { date: string; provider: string; value: number }[];
+  points: { date: string; provider: string; value: number; inputTokens?: number }[];
 }
 
 export const api = {

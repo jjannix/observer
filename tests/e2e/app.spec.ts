@@ -67,6 +67,36 @@ test.describe("Observer UI", () => {
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   });
 
+  test("cache hit rate charts show weighted percentages and zero-rate models", async ({ page }) => {
+    await page.route("**/api/v1/timeseries?**", (route) => {
+      const query = new URL(route.request().url()).searchParams;
+      const points = [
+        { date: "2026-09-01", provider: "high-cache", value: 0.9, inputTokens: 900 },
+        { date: "2026-09-01", provider: "low-cache", value: 0.1, inputTokens: 100 },
+      ];
+      if (query.get("groupBy") !== "provider") {
+        points.push({ date: "2026-09-01", provider: "zero-cache", value: 0, inputTokens: 200 });
+      }
+      return route.fulfill({ json: {
+        metric: query.get("metric"), groupBy: query.get("groupBy"),
+        buckets: ["2026-09-01"], providers: points.map((point) => point.provider), points,
+      } });
+    });
+    await page.goto("/");
+    await page.getByLabel("Chart metric").click();
+    await page.getByRole("option", { name: "Cache hit rate", exact: true }).click();
+    await expect(page.getByLabel("Chart metric")).toHaveText("Cache hit rate");
+    await expect(page.locator(".usage-section .axis")).toContainText("25.0%");
+    await page.getByRole("img", { name: "Usage over time", exact: true }).hover();
+    await expect(page.locator(".usage-section .t-total strong")).toHaveText("82.0%");
+    await page.getByRole("button", { name: "Models", exact: true }).click();
+    await expect(page.locator(".usage-section .overview-legend button")).toHaveText(["high-cache", "low-cache", "zero-cache"]);
+    await page.getByRole("img", { name: "Model usage comparison over time" }).hover();
+    await expect(page.locator(".usage-section .comparison-tip")).toContainText("0.0%");
+    await page.reload();
+    await expect(page.getByLabel("Chart metric")).toHaveText("Cache hit rate");
+  });
+
   test("observation filters persist across reloads", async ({ page }) => {
     await page.route("**/api/v1/dimensions", (route) => route.fulfill({
       json: { harnesses: ["codex"], providers: [], models: [], projects: [] },

@@ -33,6 +33,7 @@ export type TimeseriesMetric =
   | "outputTokens"
   | "freshInputTokens"
   | "cacheReadInputTokens"
+  | "cacheHitRate"
   | "costUsd"
   | "requests";
 export type TimeseriesGroupBy = "provider" | "harness" | "model";
@@ -45,6 +46,7 @@ export interface TimeseriesPoint {
   date: string; // Berlin calendar day "yyyy-MM-dd"
   provider: string;
   value: number;
+  inputTokens?: number; // Denominator for token-weighted cache hit rates.
 }
 
 export interface TimeseriesResponse {
@@ -638,6 +640,7 @@ export class Analytics {
     let minDate: string | null = null;
     let maxDate: string | null = null;
     const acc = new Map<string, number>(); // `${date}|${provider}` -> value
+    const rateInputs = new Map<string, number>();
     const seriesKeys = new Set<string>();
 
     for (const r of rows) {
@@ -651,6 +654,9 @@ export class Analytics {
       seriesKeys.add(series);
       const key = `${day}|${series}`;
       acc.set(key, (acc.get(key) ?? 0) + rowMetric(r, metric));
+      if (metric === "cacheHitRate") {
+        rateInputs.set(key, (rateInputs.get(key) ?? 0) + (r.processed_input_tokens ?? 0));
+      }
     }
 
     // If filter window is explicit and outside the data, extend to it.
@@ -667,7 +673,10 @@ export class Analytics {
     for (const date of buckets) {
       for (const provider of providers) {
         const v = acc.get(`${date}|${provider}`) ?? 0;
-        if (v > 0) points.push({ date, provider, value: v });
+        if (metric === "cacheHitRate") {
+          const inputTokens = rateInputs.get(`${date}|${provider}`) ?? 0;
+          if (inputTokens > 0) points.push({ date, provider, value: v / inputTokens, inputTokens });
+        } else if (v > 0) points.push({ date, provider, value: v });
       }
     }
 
@@ -843,6 +852,7 @@ function rowMetric(r: any, metric: TimeseriesMetric): number {
     case "processedInputTokens": return r.processed_input_tokens ?? 0;
     case "outputTokens": return r.output_tokens ?? 0;
     case "freshInputTokens": return r.fresh_input_tokens ?? 0;
+    case "cacheHitRate":
     case "cacheReadInputTokens": return r.cache_read_input_tokens ?? 0;
     case "costUsd": return r.cost_available ? r.cost_nano_usd ?? 0 : 0;
     case "requests": return 1;

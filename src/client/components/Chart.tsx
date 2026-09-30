@@ -4,10 +4,12 @@ export interface ChartPoint {
   date: string;
   provider: string;
   value: number;
+  inputTokens?: number;
 }
 
 export interface OverviewChartProps {
   grouping: "total" | "harness" | "model";
+  isRate?: boolean;
   modelData?: OverviewChartProps["harnessData"];
   modelLimit?: 3 | 5;
   seriesLabel?: (series: string) => string;
@@ -39,6 +41,7 @@ interface Props {
 
 export function OverviewChart({
   grouping,
+  isRate = false,
   totalData,
   harnessData,
   modelData,
@@ -70,16 +73,23 @@ export function OverviewChart({
     const providers = totalData?.providers ?? harnessData?.providers ?? [];
     const lookup = new Map<string, number>();
     const providerTotals = new Map<string, number>();
+    const inputLookup = new Map<string, number>();
     for (const point of points) {
       lookup.set(`${point.date}|${point.provider}`, point.value);
+      inputLookup.set(`${point.date}|${point.provider}`, point.inputTokens ?? 0);
       providerTotals.set(point.provider, (providerTotals.get(point.provider) ?? 0) + point.value);
     }
     const ordered = [...providers].sort((a, b) => (providerTotals.get(b) ?? 0) - (providerTotals.get(a) ?? 0));
     const matrix = buckets.map((date) => ordered.map((provider) => lookup.get(`${date}|${provider}`) ?? 0));
-    const dailyTotal = matrix.map((row) => row.reduce((sum, value) => sum + value, 0));
+    const dailyTotal = matrix.map((row, index) => {
+      if (!isRate) return row.reduce((sum, value) => sum + value, 0);
+      const inputs = ordered.map((provider) => inputLookup.get(`${buckets[index]}|${provider}`) ?? 0);
+      const denominator = inputs.reduce((sum, value) => sum + value, 0);
+      return denominator > 0 ? row.reduce((sum, rate, i) => sum + rate * inputs[i], 0) / denominator : 0;
+    });
     const maxTotal = Math.max(1, ...dailyTotal);
     return { buckets, matrix, dailyTotal, maxTotal, orderedProviders: ordered };
-  }, [totalData, harnessData]);
+  }, [totalData, harnessData, isRate]);
 
   const comparisonData = grouping === "model" ? modelData : harnessData;
   const comparisonLimit = grouping === "model" ? modelLimit : 4;
@@ -93,18 +103,25 @@ export function OverviewChart({
 
     const lookup = new Map<string, number>();
     const totals = new Map<string, number>();
+    const inputs = new Map<string, number>();
     for (const point of points) {
       lookup.set(`${point.date}|${point.provider}`, point.value);
-      totals.set(point.provider, (totals.get(point.provider) ?? 0) + point.value);
+      totals.set(point.provider, (totals.get(point.provider) ?? 0) + point.value * (isRate ? point.inputTokens ?? 0 : 1));
+      inputs.set(point.provider, (inputs.get(point.provider) ?? 0) + (point.inputTokens ?? 0));
+    }
+    if (isRate) {
+      for (const [provider, total] of totals) {
+        totals.set(provider, total / (inputs.get(provider) || 1));
+      }
     }
     const series = [...providers]
-      .filter((provider) => (totals.get(provider) ?? 0) > 0)
+      .filter((provider) => isRate ? (inputs.get(provider) ?? 0) > 0 : (totals.get(provider) ?? 0) > 0)
       .sort((a, b) => (totals.get(b) ?? 0) - (totals.get(a) ?? 0))
       .slice(0, comparisonLimit);
     const matrix = series.map((provider) => buckets.map((date) => lookup.get(`${date}|${provider}`) ?? 0));
     const maxValue = Math.max(1, ...matrix.flat());
     return { buckets, ordered: series, values: matrix, maxValue };
-  }, [comparisonData, totalData, comparisonLimit]);
+  }, [comparisonData, totalData, comparisonLimit, isRate]);
 
   const isComparison = grouping !== "total";
   const targetGeometry = useMemo(() => {
@@ -249,7 +266,7 @@ export function OverviewChart({
             <g key={mode} className={`overview-chart-layer ${active ? "is-active" : "is-inactive"}`} aria-hidden={!active}>
               {tickFractions.map((fraction) => (
                 <text key={fraction} x={padL - 10} y={padT + plotH * (1 - fraction) + 4} textAnchor="end">
-                  {formatValue(Math.round(max * fraction))}
+                  {formatValue(isRate ? max * fraction : Math.round(max * fraction))}
                 </text>
               ))}
             </g>
@@ -334,7 +351,7 @@ export function OverviewChart({
             >
               <div className="t-date">{fmtFullDay(buckets[hover])}</div>
               <div className="t-total">
-                <span>Processed</span>
+                <span>{isRate ? "Cache hit rate" : "Processed"}</span>
                 <strong>{formatValue(totalModel.dailyTotal[hover])}</strong>
               </div>
               {totalModel.orderedProviders
@@ -342,7 +359,7 @@ export function OverviewChart({
                   provider,
                   value: totalModel.matrix[hover][providerIndex],
                 }))
-                .filter((row) => row.value > 0)
+                .filter((row) => isRate || row.value > 0)
                 .slice(0, 5)
                 .map((row) => (
                   <div key={row.provider} className="t-row">

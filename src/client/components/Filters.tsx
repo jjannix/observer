@@ -34,6 +34,7 @@ export const CHART_METRICS = [
   { id: "processedInputTokens", label: "Processed input" },
   { id: "freshInputTokens", label: "Fresh input" },
   { id: "cacheReadInputTokens", label: "Cache read" },
+  { id: "cacheHitRate", label: "Cache hit rate" },
   { id: "outputTokens", label: "Output" },
   { id: "costUsd", label: "Cost (USD)" },
   { id: "requests", label: "Requests" },
