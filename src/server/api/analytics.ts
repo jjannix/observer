@@ -608,7 +608,7 @@ export class Analytics {
       models: models.map((m) => ({
         id: m.id,
         canonicalModelId: m.canonicalModelId,
-        display: m.display ?? m.canonicalModelId ?? m.id,
+        display: prettyModelDisplay(m.display ?? m.canonicalModelId ?? m.id, m.id),
         owner: m.owner,
         eventCount: m.eventCount,
       })),
@@ -738,7 +738,7 @@ export class Analytics {
       const canonicalId = mergedModelId(r.modelId);
       const existing = modelMap.get(canonicalId);
       const owner = meta?.owner ?? modelOwner(canonicalId) ?? null;
-      const display = meta?.display ?? modelDisplay(r.rawModelId, canonicalId);
+      const display = prettyModelDisplay(meta?.display ?? modelDisplay(r.rawModelId, canonicalId), canonicalId);
 
       if (!existing) {
         modelMap.set(canonicalId, {
@@ -834,6 +834,23 @@ export class Analytics {
 function mergedModelId(storedModelId: string): string {
   if (storedModelId === "unknown") return "unknown";
   return canonicalizeModelId(storedModelId) ?? storedModelId;
+}
+
+/**
+ * Display label for a model. Human aliases win verbatim; otherwise the label
+ * mirrors the canonical id with a redundant owner prefix collapsed
+ * (`deepseek/deepseek-v4.1-flash` → `deepseek-v4.1-flash`).
+ */
+function prettyModelDisplay(display: string | null | undefined, canonicalId: string): string {
+  const base = display ?? canonicalId;
+  if (base.toLowerCase() !== canonicalId.toLowerCase()) return base;
+  const slash = canonicalId.indexOf("/");
+  if (slash > 0) {
+    const owner = canonicalId.slice(0, slash).toLowerCase();
+    const family = canonicalId.slice(slash + 1);
+    if (family.toLowerCase().startsWith(`${owner}-`)) return family;
+  }
+  return base;
 }
 
 function modeByProvider(billing: ProviderBilling[], ownerSegment: string): "subscription" | "metered" | "unspecified" {

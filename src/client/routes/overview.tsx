@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { keepPreviousData, useQueries, useQuery } from "@tanstack/react-query";
+import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import { api, rangeToFilters } from "../api.js";
 import { CHART_METRICS, FiltersBar, useFilterState, type FilterState } from "../components/Filters.js";
@@ -69,22 +69,15 @@ export function Overview() {
     },
     placeholderData: keepPreviousData,
   });
-  const modelCandidates = (dims?.models ?? []).slice(0, 12);
-  const modelSummaries = useQueries({
-    queries: modelCandidates.map((model) => ({
-      queryKey: ["summary", "model", model.id, range],
-      queryFn: () => api.summary({ ...range, model: [model.id] }),
-      staleTime: 10_000,
-    })),
+  const { data: modelsBreakdown, isPending: modelsPending } = useQuery({
+    queryKey: ["models-breakdown", range],
+    queryFn: () => api.modelsBreakdown(range),
   });
 
   const totals = summary?.totals;
   const previousTokens = previous?.totals.processedTokens;
   const change = totals && previousTokens ? totals.processedTokens / previousTokens - 1 : null;
-  const modelRows = modelCandidates
-    .map((model, index) => ({ model, totals: modelSummaries[index]?.data?.totals }))
-    .filter(({ totals: row }) => row == null || row.processedTokens > 0)
-    .slice(0, 5);
+  const modelRows = (modelsBreakdown?.models ?? []).slice(0, 5);
   const rawHarnessTimeseries = chartData?.harness;
   const harnessChart = useMemo(() => (rawHarnessTimeseries ? {
     buckets: rawHarnessTimeseries.buckets,
@@ -184,22 +177,23 @@ export function Overview() {
       </section>
 
       <section className="instrument-section models-section">
-        <div className="section-head"><div><h2>Models</h2><span className="hint">Processed usage by model</span></div></div>
+        <div className="section-head"><div><h2>Models</h2><span className="hint">Top models by processed tokens in this period</span></div></div>
         <div className="table-scroll">
           <table className="data instrument-table">
             <thead><tr><th>Model</th><th>Processed</th><th>Input</th><th>Output</th><th>Cache</th><th>Cost</th></tr></thead>
             <tbody>
-              {modelRows.map(({ model, totals: row }) => {
+              {modelRows.map((model) => {
                 return <tr key={model.id}>
                   <td><span className="model-id">{model.display}</span></td>
-                  <td className="tnum">{fmtCompactPrecise(row?.processedTokens)}</td>
-                  <td className="tnum">{fmtCompactPrecise(row?.processedInputTokens)}</td>
-                  <td className="tnum">{fmtCompactPrecise(row?.outputTokens)}</td>
-                  <td className="tnum">{fmtPct(row?.cacheHitRate)}</td>
-                  <td className="tnum">{fmtUsd(row?.costUsd)}</td>
-                </tr>
+                  <td className="tnum">{fmtCompactPrecise(model.processedTokens)}</td>
+                  <td className="tnum">{fmtCompactPrecise(model.processedInputTokens)}</td>
+                  <td className="tnum">{fmtCompactPrecise(model.outputTokens)}</td>
+                  <td className="tnum">{fmtPct(model.cacheHitRate)}</td>
+                  <td className="tnum">{model.costUsd == null ? "—" : fmtUsd(model.costUsd)}</td>
+                </tr>;
               })}
-              {modelRows.length === 0 && <tr><td colSpan={6} className="empty">No model observations in this period.</td></tr>}
+              {modelsPending && modelRows.length === 0 && <tr><td colSpan={6} className="empty">Loading models…</td></tr>}
+              {!modelsPending && modelRows.length === 0 && <tr><td colSpan={6} className="empty">No model observations in this period.</td></tr>}
             </tbody>
           </table>
         </div>

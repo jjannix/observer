@@ -613,4 +613,27 @@ describe("HTTP API", () => {
     const dims = dimsRes.json();
     expect(dims.models[0].id).toBe("google/gemini-3.7-flash");
   });
+
+  it("model displays collapse a redundant owner prefix but keep human aliases", async () => {
+    const insertModel = state.raw.prepare(
+      `INSERT OR IGNORE INTO models (id, canonical_model_id, raw_model_id, owner, display) VALUES (?, ?, ?, ?, ?)`,
+    );
+    insertModel.run("deepseek/deepseek-v4.1-flash", "deepseek/deepseek-v4.1-flash", "deepseek/deepseek-v4.1-flash", "deepseek", "deepseek/deepseek-v4.1-flash");
+    insertModel.run("zai/glm-5.2", "zai/glm-5.2", "glm-5.2", "zai", "GLM 5.2");
+    const insert = state.raw.prepare(
+      `INSERT INTO usage_events
+       (id, harness, occurred_at, logical_session_id, request_id, raw_model_id, canonical_model_id, processed_tokens)
+       VALUES (?, 'pi', '2025-01-01T00:00:00Z', ?, ?, ?, ?, ?)`,
+    );
+    insert.run("pd1", "s1", "r1", "deepseek/deepseek-v4.1-flash", "deepseek/deepseek-v4.1-flash", 100);
+    insert.run("pd2", "s2", "r2", "glm-5.2", "zai/glm-5.2", 100);
+
+    const dims = (await app.inject({ method: "GET", url: "/api/v1/dimensions" })).json();
+    expect(dims.models.find((m: any) => m.id === "deepseek/deepseek-v4.1-flash").display).toBe("deepseek-v4.1-flash");
+    expect(dims.models.find((m: any) => m.id === "zai/glm-5.2").display).toBe("GLM 5.2");
+
+    const breakdown = (await app.inject({ method: "GET", url: "/api/v1/models-breakdown" })).json();
+    expect(breakdown.models.find((m: any) => m.id === "deepseek/deepseek-v4.1-flash").display).toBe("deepseek-v4.1-flash");
+    expect(breakdown.models.find((m: any) => m.id === "zai/glm-5.2").display).toBe("GLM 5.2");
+  });
 });
