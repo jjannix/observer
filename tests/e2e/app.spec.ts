@@ -291,6 +291,73 @@ test.describe("Observer UI", () => {
     await expect(page.locator(".session-browser-table tbody tr").first()).toBeVisible();
   });
 
+  test("activity graph shades days, explains them on hover and opens a day's sessions", async ({ page }) => {
+    const days = Array.from({ length: 30 }, (_, index) => {
+      const date = new Date(Date.UTC(2026, 8, 10 + index)).toISOString().slice(0, 10);
+      const active = index % 3 !== 0;
+      return {
+        date,
+        sessions: active ? index : 0,
+        processedTokens: active ? index * 1000 : 0,
+        requests: active ? index * 2 : 0,
+        harnesses: active
+          ? [
+              { harness: "codex", sessions: index - 1, processedTokens: index * 600, requests: index },
+              { harness: "pi", sessions: 1, processedTokens: index * 400, requests: index },
+            ]
+          : [],
+      };
+    });
+    const requested: string[] = [];
+    await page.route("**/api/v1/activity?**", (route) => {
+      requested.push(new URL(route.request().url()).searchParams.get("range") ?? "");
+      return route.fulfill({ json: {
+        range: "30d", timezone: "Europe/Berlin", start: "2026-09-10", end: "2026-10-09", days,
+        totals: { sessions: 300, processedTokens: 290_000, requests: 580, activeDays: 20 },
+      } });
+    });
+    await page.goto("/activity?range=30d");
+    await expect(page.locator("h1")).toHaveText("Activity");
+    await expect(page.getByRole("button", { name: "1M", exact: true })).toHaveAttribute("aria-pressed", "true");
+    await expect(page.locator(".activity-cell[data-date]")).toHaveCount(30);
+    await expect(page.locator('.activity-cell[data-date="2026-09-10"]')).toHaveAttribute("data-level", "0");
+    await expect(page.locator('.activity-cell[data-date="2026-10-08"]')).toHaveAttribute("data-level", "4");
+    await expect(page.getByText("20 / 30", { exact: true })).toBeVisible();
+
+    await page.locator('.activity-cell[data-date="2026-10-08"]').hover();
+    const tip = page.locator(".activity-tip");
+    await expect(tip).toContainText("Thu, Oct 8, 2026");
+    await expect(tip).toContainText("28K tokens");
+    await expect(tip).toContainText("28 sessions");
+    await expect(tip).toContainText("Codex");
+    await expect(tip).toContainText("Pi");
+
+    await page.getByRole("button", { name: "Sessions", exact: true }).click();
+    await expect(page).toHaveURL(/by=sessions/);
+    await expect(page.locator(".activity-tip")).toHaveCount(0);
+
+    // Keyboard: today is focusable; ArrowLeft moves back one week.
+    await page.locator('.activity-cell[tabindex="0"]').focus();
+    await expect(page.locator('.activity-cell[tabindex="0"]')).toHaveAttribute("data-date", "2026-10-09");
+    await page.keyboard.press("ArrowLeft");
+    await expect(page.locator('.activity-cell[data-date="2026-10-02"]')).toBeFocused();
+
+    let sessionsQuery: URLSearchParams | null = null;
+    await page.route("**/api/v1/config", (route) => route.fulfill({ json: { timezone: "Europe/Berlin" } }));
+    await page.route("**/api/v1/sessions?**", (route) => {
+      sessionsQuery = new URL(route.request().url()).searchParams;
+      return route.fulfill({ json: { items: [], total: 0, page: 1, pageSize: 25 } });
+    });
+    await page.keyboard.press("Enter");
+    await expect(page).toHaveURL(/\/sessions\?day=2026-10-02$/);
+    await expect(page.getByText("Fri, Oct 2, 2026", { exact: true })).toBeVisible();
+    await expect.poll(() => sessionsQuery?.get("from")).toBe("2026-10-01T22:00:00.000Z");
+    expect(sessionsQuery!.get("to")).toBe("2026-10-02T22:00:00.000Z");
+    await page.getByRole("button", { name: "Show selected period", exact: true }).click();
+    await expect(page).toHaveURL(/\/sessions$/);
+    expect(requested).toContain("30d");
+  });
+
   test("analysis route renders the analytical views", async ({ page }) => {
     await page.goto("/analysis");
     await expect(page.locator("h1")).toHaveText("Analysis");

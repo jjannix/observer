@@ -158,6 +158,7 @@ Resolution precedence: **user-override → seed-alias → deterministic → unkn
 | GET | `/models-breakdown` | per-model in-range totals ranked by processed tokens |
 | GET | `/cache-attribution` | harness cache-read share, provider mix, and adjusted lift |
 | GET | `/events` | opaque-cursor pagination over normalized events |
+| GET | `/activity` | per-day sessions, processed tokens, requests and harness split for the contribution graph |
 | GET | `/sessions` | complete in-range session aggregates, search, sorting, and pagination |
 | GET | `/sessions/:id` | session totals, model/provider breakdown, usage timeline, and largest requests |
 | GET | `/sessions/:id/requests` | session-scoped request pagination, ordered by time or token usage |
@@ -179,6 +180,14 @@ Opening a session defaults to its full collected history. **Selected period & fi
 **Reported cost** is unavailable when the source supplied no cost, and explicitly partial when only some requests supplied it. Subscription-marked provider figures are list-price equivalents, as elsewhere in Observer. **Observed span** means the interval between first and last recorded usage, including idle gaps; it does not measure active working time. Reasoning is shown as a subset of output and never added twice.
 
 The list API accepts the shared filters plus `search`, `sort=recent|tokens|cost|requests|project|harness|cache`, `direction=asc|desc`, `page` (1-based), and `pageSize` (1–100, default 25). Session detail and requests default to full history unless shared filters are supplied. Request pagination accepts `sort=oldest|recent|largest|model|fresh|cache|output|cost`, `direction=asc|desc`, opaque `cursor`, and `pageSize` (1–250, default 50). Session IDs in route paths must be URL-encoded.
+
+## Activity
+
+Activity is a contribution graph of daily usage: columns are Monday-first weeks, rows are weekdays, and each day is shaded by processed tokens or by session count. Shades are quartiles of the active days in view, so a few very heavy days don't flatten the rest. Choose the last year, last 90 days or last month; the dimension filters apply as elsewhere. Hover or focus a day for its sessions, tokens, requests and per-harness split; click it (or press Enter) to open that day's sessions in the session explorer, which shows a "Show selected period" link to return to the usual range.
+
+Days are calendar days in the configured time zone, with DST-aware bounds. A session counts on every day it had a request, and once in the period totals. Per-day figures use the same processed-token definition as the session explorer, so an opened day lists exactly the sessions and tokens shown in its tooltip.
+
+The API takes `range=1y|90d|30d` (default `1y`) plus the shared `harness`/`provider`/`model`/`project` filters, and returns every day in the window, idle days included. It aggregates existing normalized events; no extra data is collected. In the UI, `/sessions?day=yyyy-MM-dd` opens the session explorer scoped to that day.
 
 ## Privacy
 

@@ -1,5 +1,6 @@
-import { REQUEST_SORTS, SESSION_SORTS, type RequestSort, type SessionSort, type SortDirection } from "@shared/contracts";
+import { ACTIVITY_RANGES, REQUEST_SORTS, SESSION_SORTS, type ActivityRange, type RequestSort, type SessionSort, type SortDirection } from "@shared/contracts";
 import { SessionAnalytics } from "./sessions.js";
+import { ActivityAnalytics } from "./activity.js";
 import type { FastifyInstance } from "fastify";
 import { existsSync } from "node:fs";
 import {
@@ -19,6 +20,7 @@ import { resolveProject } from "../normalization/canonical.js";
 export function registerApi(app: FastifyInstance, state: AppState): void {
   const analytics = new Analytics(state.raw);
   const sessions = new SessionAnalytics(state.raw);
+  const activity = new ActivityAnalytics(state.raw);
 
   app.get("/api/v1/health", async (): Promise<HealthResponse> => {
     const schemaVersion = (state.raw.prepare(`SELECT COALESCE(MAX(version),0) AS v FROM schema_migrations`).get() as any).v;
@@ -111,6 +113,16 @@ export function registerApi(app: FastifyInstance, state: AppState): void {
       return reply.code(400).send({ error: "invalid-session-query" });
     }
     return analytics.events({ ...parseFilters(q), sessionId: id }, cursor, pageSize, sort as RequestSort, direction as SortDirection);
+  });
+
+  app.get("/api/v1/activity", async (req, reply) => {
+    const q = req.query as Record<string, unknown>;
+    const range = q.range == null ? "1y" : String(q.range);
+    if (!Object.hasOwn(ACTIVITY_RANGES, range)) {
+      return reply.code(400).send({ error: "invalid-activity-range" });
+    }
+    const { harness, provider, model, project } = parseFilters(q);
+    return activity.daily(range as ActivityRange, { harness, provider, model, project }, state.getConfig().timezone);
   });
 
   app.get("/api/v1/largest-sessions", async (req) => {

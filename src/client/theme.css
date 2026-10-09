@@ -986,3 +986,69 @@ table.data tbody tr { transition: background-color var(--duration) ease; }
 @media (prefers-reduced-motion: reduce) {
   .session-explorer * { transition: none !important; animation: none !important; }
 }
+
+/* Activity: contribution graph of daily usage. One-hue sequential ramp on the
+   accent, stepping up in lightness from the empty-day surface. */
+.activity-section {
+  --activity-gap: 3px;
+  --activity-label: 28px;
+  --activity-0: #151515;
+  --activity-1: #1f2d47;
+  --activity-2: #314f84;
+  --activity-3: #5f88d1;
+  --activity-4: #afcbff;
+}
+.activity-readings { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 40px; margin: 4px 0 30px; }
+.activity-readings .readout { padding: 6px 0; }
+.activity-frame {
+  --cell-max: 22px;
+  position: relative;
+  max-width: calc(var(--activity-label) + var(--columns) * (var(--cell-max) + var(--activity-gap)) + 8px);
+}
+.activity-frame[data-range="90d"] { --cell-max: 36px; }
+.activity-frame[data-range="30d"] { --cell-max: 44px; }
+.activity-scroll { overflow-x: auto; padding: 4px; }
+.activity-graph {
+  display: grid;
+  grid-template-columns: var(--activity-label) repeat(var(--columns), minmax(11px, 1fr));
+  grid-template-rows: 16px;
+  gap: var(--activity-gap);
+}
+.activity-cells, .activity-row { display: contents; }
+.activity-month { grid-row: 1; align-self: end; color: var(--fg-3); font-size: 10px; line-height: 1; white-space: nowrap; }
+.activity-weekday { grid-column: 1; align-self: center; color: var(--fg-3); font-size: 10px; line-height: 1; }
+.activity-cell { display: block; aspect-ratio: 1; border-radius: 2px; background: var(--activity-0); transition: outline-color 80ms ease; }
+.activity-cell[data-level="1"] { background: var(--activity-1); }
+.activity-cell[data-level="2"] { background: var(--activity-2); }
+.activity-cell[data-level="3"] { background: var(--activity-3); }
+.activity-cell[data-level="4"] { background: var(--activity-4); }
+.activity-cell.is-outside { background: transparent; }
+.activity-cell.is-active { cursor: pointer; }
+.activity-cell.is-hovered { outline: 1px solid var(--fg-0); outline-offset: 1px; }
+.activity-cell:focus { outline: none; }
+.activity-cell:focus-visible { outline: 2px solid var(--fg-0); outline-offset: 2px; }
+.activity-tip { min-width: 230px; white-space: nowrap; transform: translate(-50%, calc(-100% - 10px)); }
+.activity-tip[data-align="start"] { transform: translate(-14px, calc(-100% - 10px)); }
+.activity-tip[data-align="end"] { transform: translate(calc(-100% + 14px), calc(-100% - 10px)); }
+.activity-tip .t-total strong { font-size: 13px; font-weight: 500; }
+.activity-tip .t-total span, .activity-tip .t-muted { color: var(--fg-3); }
+.activity-tip-harnesses { margin-top: 7px; padding-top: 4px; border-top: 1px solid var(--border); }
+.activity-tip-harnesses .t-row span:last-child { color: var(--fg-1); font-variant-numeric: tabular-nums; }
+.activity-tip-harness { display: inline-flex; align-items: center; gap: 6px; }
+.activity-tip-harness i { width: 7px; height: 7px; border-radius: 2px; }
+.activity-tip-hint { margin-top: 8px; color: var(--fg-3); font-size: 10px; }
+.activity-legend { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px 20px; margin-top: 12px; padding: 0 4px 0 calc(var(--activity-label) + 4px); }
+.activity-legend .hint { color: var(--fg-3); font-size: 11px; }
+.activity-scale { display: inline-flex; align-items: center; gap: 3px; color: var(--fg-3); font-size: 10px; }
+.activity-scale > span:first-child { margin-right: 3px; }
+.activity-scale > span:last-child { margin-left: 3px; }
+.activity-scale .activity-cell { width: 11px; height: 11px; aspect-ratio: auto; }
+.activity-skeleton { height: 210px; }
+.session-day { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; }
+.session-day strong { color: var(--fg-1); font-weight: 500; }
+.session-day-clear { padding: 0; border: 0; background: none; color: var(--accent); font-size: inherit; }
+.session-day-clear:hover { background: none; text-decoration: underline; }
+@media (max-width: 800px) {
+  .activity-readings { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; }
+  .activity-section .section-head { flex-wrap: wrap; }
+}

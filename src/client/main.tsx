@@ -7,6 +7,7 @@ import { App } from "./App.js";
 import { Overview } from "./routes/overview.js";
 import { Sessions } from "./routes/sessions.js";
 import { Analysis } from "./routes/analysis.js";
+import { Activity } from "./routes/activity.js";
 import { Settings } from "./routes/settings.js";
 
 const queryClient = new QueryClient({
@@ -22,6 +23,7 @@ createRoot(document.getElementById("root")!).render(
         <Routes>
           <Route path="/" element={<App />}>
             <Route index element={<Overview />} />
+            <Route path="activity" element={<Activity />} />
             <Route path="sessions" element={<Sessions />} />
             <Route path="analysis" element={<Analysis />} />
             <Route path="events" element={<Navigate to="/sessions" replace />} />
