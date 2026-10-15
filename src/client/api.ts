@@ -22,6 +22,7 @@ async function jsonFetch<T>(url: string, init?: RequestInit): Promise<T> {
 }
 
 import type {
+  ActivityResponse,
   SessionDetail,
   SessionsPage,
   SessionSort,
@@ -71,6 +72,8 @@ export const api = {
     jsonFetch<SessionDetail>(`/api/v1/sessions/${encodeURIComponent(id)}?${qs(filters as Record<string, unknown>)}`),
   sessionRequests: (id: string, filters: RangeFilters, cursor: string | null, sort: RequestSort, direction: SortDirection) =>
     jsonFetch<EventsPage>(`/api/v1/sessions/${encodeURIComponent(id)}/requests?${qs({ ...filters, cursor, pageSize: 50, sort, direction })}`),
+  activity: (filters: RangeFilters) =>
+    jsonFetch<ActivityResponse>(`/api/v1/activity?${qs(filters as Record<string, unknown>)}`),
   largestSessions: (filters: RangeFilters, limit = 5) =>
     jsonFetch<LargestSessionRow[]>(`/api/v1/largest-sessions?${qs({ ...filters, limit } as Record<string, unknown>)}`),
   config: () => jsonFetch<SanitizedConfig>("/api/v1/config"),

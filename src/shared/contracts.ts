@@ -384,3 +384,26 @@ export interface SessionDetail {
 
 export const REQUEST_SORTS = ["oldest", "recent", "largest", "model", "fresh", "cache", "output", "cost"] as const;
 export type RequestSort = (typeof REQUEST_SORTS)[number];
+
+export interface ActivityUsage {
+  /** Distinct sessions with at least one matching request in the period. */
+  sessions: number;
+  processedTokens: number;
+  requests: number;
+}
+
+export interface ActivityDay extends ActivityUsage {
+  date: string; // local calendar day "yyyy-MM-dd"
+  harnesses: Array<ActivityUsage & { harness: HarnessId }>;
+}
+
+export interface ActivityResponse {
+  timezone: string;
+  /** Inclusive first and last calendar day the period touches. */
+  start: string;
+  end: string;
+  /** One entry per calendar day, including idle days; edge days are clipped to the period. */
+  days: ActivityDay[];
+  /** Period totals; sessions spanning several days are counted once. */
+  totals: ActivityUsage & { activeDays: number };
+}

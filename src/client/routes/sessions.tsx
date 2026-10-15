@@ -10,8 +10,10 @@ import {
   type SessionUsage,
   type SortDirection,
 } from "@shared/contracts";
+import { dayBounds, isCalendarDay } from "@shared/days";
 import { api, rangeToFilters, type RangeFilters } from "../api.js";
 import { FiltersBar, useFilterState } from "../components/Filters.js";
+import { ActivityGraph } from "../components/ActivityGraph.js";
 import {
   COLORS,
   CompositionBar,
@@ -26,6 +28,15 @@ export function Sessions() {
   const [filters, setFilters] = useFilterState();
   const [params, setParams] = useSearchParams();
   const selectedId = params.get("session");
+  // A calendar day picked in the activity graph narrows the period without
+  // replacing the persisted observation range.
+  const day = isCalendarDay(params.get("day")) ? params.get("day") : null;
+  const { data: config } = useQuery({
+    queryKey: ["config"],
+    queryFn: api.config,
+    enabled: Boolean(day),
+  });
+  const timezone = config?.timezone;
   const search = params.get("q") ?? "";
   const [searchInput, setSearchInput] = useState(search);
   const sort = SESSION_SORTS.includes(params.get("sort") as SessionSort)
@@ -44,17 +55,33 @@ export function Sessions() {
     Number.isInteger(requestedPage) && requestedPage > 0 ? requestedPage : 1;
   const lastSelected = useRef<string | null>(selectedId);
   const searchRef = useRef<HTMLInputElement>(null);
-  const range = useMemo(() => {
-    const resolved = rangeToFilters(filters.range, "Europe/Berlin");
+  // The activity graph shows the selected period; the list narrows to a
+  // picked day within it.
+  const period = useMemo(() => {
+    const resolved =
+      filters.range === "custom"
+        ? { from: filters.from, to: filters.to }
+        : rangeToFilters(filters.range, "Europe/Berlin");
     return {
-      from: filters.range === "custom" ? filters.from : resolved.from,
-      to: filters.range === "custom" ? filters.to : resolved.to,
+      from: resolved.from,
+      to: resolved.to,
       harness: filters.harness,
       provider: filters.provider,
       model: filters.model,
       project: filters.project,
     };
   }, [filters]);
+  const range = useMemo(() => {
+    if (!day || !timezone) return period;
+    const bounds = dayBounds(day, timezone);
+    // Edge-day tiles only count requests inside the observation period.
+    // Keep that same intersection when listing the selected day's sessions.
+    return {
+      ...period,
+      from: period.from && Date.parse(period.from) > Date.parse(bounds.from) ? period.from : bounds.from,
+      to: period.to && Date.parse(period.to) < Date.parse(bounds.to) ? period.to : bounds.to,
+    };
+  }, [period, day, timezone]);
   const { data: dims } = useQuery({
     queryKey: ["dimensions"],
     queryFn: api.dimensions,
@@ -62,7 +89,7 @@ export function Sessions() {
   const list = useQuery({
     queryKey: ["sessions", range, search, sort, direction, page],
     queryFn: () => api.sessions(range, search, sort, page, direction),
-    enabled: !selectedId,
+    enabled: !selectedId && (!day || Boolean(timezone)),
     // Preserve the table for sorting/paging, but never retain a different search or scope.
     placeholderData: (previous, previousQuery) =>
       previousQuery?.queryKey[2] === search &&
@@ -166,8 +193,13 @@ export function Sessions() {
           dims={dims}
           filters={filters}
           onChange={(next) => {
+            // A new period replaces the picked day; other filters keep it.
+            const periodChanged =
+              next.range !== filters.range ||
+              next.from !== filters.from ||
+              next.to !== filters.to;
             setFilters(next);
-            updateParams({ page: null }, true);
+            updateParams({ page: null, ...(periodChanged ? { day: null } : {}) }, true);
           }}
         />
       </div>
@@ -180,6 +212,11 @@ export function Sessions() {
         />
       ) : (
         <>
+          <ActivityGraph
+            filters={period}
+            selectedDay={day}
+            onSelectDay={(next) => updateParams({ day: next, page: null })}
+          />
           <div className="session-toolbar">
             <label className="session-search">
               <span>Search sessions</span>
@@ -217,9 +254,25 @@ export function Sessions() {
             <div className="section-head">
               <div>
                 <h2 id="sessions-list-heading">Observed sessions</h2>
-                <p className="session-hint">
-                  Usage within the selected period and filters.
-                </p>
+                {day ? (
+                  <p className="session-hint session-day">
+                    <span>
+                      Usage on <strong>{formatDay(day)}</strong>
+                      {timezone ? ` (${timezone})` : ""} within the selected
+                      filters.
+                    </span>
+                    <button
+                      className="session-day-clear"
+                      onClick={() => updateParams({ day: null, page: null })}
+                    >
+                      Show selected period
+                    </button>
+                  </p>
+                ) : (
+                  <p className="session-hint">
+                    Usage within the selected period and filters.
+                  </p>
+                )}
               </div>
               <div className="session-result-status">
                 <UpdatingStatus active={list.isFetching && !list.isPending} />
@@ -250,7 +303,7 @@ export function Sessions() {
                   className="ghost"
                   onClick={() => {
                     setSearchInput("");
-                    updateParams({ q: null, page: null }, true);
+                    updateParams({ q: null, page: null, day: null }, true);
                     setFilters({ range: "all" });
                   }}
                 >
@@ -1349,6 +1402,15 @@ function formatTimestamp(iso: string): string {
     minute: "2-digit",
     hour12: false,
   }).format(new Date(iso));
+}
+function formatDay(day: string): string {
+  return new Intl.DateTimeFormat("en", {
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    timeZone: "UTC",
+  }).format(new Date(`${day}T00:00:00Z`));
 }
 function formatSpan(start: string, end: string): string {
   const ms = Math.max(0, Date.parse(end) - Date.parse(start));

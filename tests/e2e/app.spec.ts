@@ -291,6 +291,171 @@ test.describe("Observer UI", () => {
     await expect(page.locator(".session-browser-table tbody tr").first()).toBeVisible();
   });
 
+  test("session activity graph shades days, explains them on hover and lists a day's sessions", async ({ page }) => {
+    const days = Array.from({ length: 30 }, (_, index) => {
+      const date = new Date(Date.UTC(2026, 8, 10 + index)).toISOString().slice(0, 10);
+      const active = index % 3 !== 0;
+      return {
+        date,
+        sessions: active ? index : 0,
+        processedTokens: active ? index * 1000 : 0,
+        requests: active ? index * 2 : 0,
+        harnesses: active
+          ? [
+              { harness: "codex", sessions: index - 1, processedTokens: index * 600, requests: index },
+              { harness: "pi", sessions: 1, processedTokens: index * 400, requests: index },
+            ]
+          : [],
+      };
+    });
+    // The graph follows the main period selector (30D by default).
+    const activityFrom: string[] = [];
+    await page.route("**/api/v1/activity?**", (route) => {
+      activityFrom.push(new URL(route.request().url()).searchParams.get("from") ?? "");
+      return route.fulfill({ json: {
+        timezone: "Europe/Berlin", start: "2026-09-10", end: "2026-10-09", days,
+        totals: { sessions: 300, processedTokens: 290_000, requests: 580, activeDays: 20 },
+      } });
+    });
+    let sessionsQuery: URLSearchParams | null = null;
+    await page.route("**/api/v1/config", (route) => route.fulfill({ json: { timezone: "Europe/Berlin" } }));
+    await page.route("**/api/v1/sessions?**", (route) => {
+      sessionsQuery = new URL(route.request().url()).searchParams;
+      return route.fulfill({ json: { items: [], total: 0, page: 1, pageSize: 25 } });
+    });
+    await page.goto("/sessions");
+    await expect(page.locator("h1")).toHaveText("Sessions");
+    await expect(page.locator(".activity-cell[data-date]")).toHaveCount(30);
+    expect(Date.now() - Date.parse(activityFrom[0])).toBeGreaterThan(29 * 86_400_000);
+    expect(Date.now() - Date.parse(activityFrom[0])).toBeLessThan(31 * 86_400_000);
+    await expect(page.locator('.activity-cell[data-date="2026-09-10"]')).toHaveAttribute("data-level", "0");
+    await expect(page.locator('.activity-cell[data-date="2026-10-08"]')).toHaveAttribute("data-level", "4");
+    await expect(page.locator(".activity-legend")).toContainText("20 active days · 300 sessions · 290K tokens");
+
+    await page.locator('.activity-cell[data-date="2026-10-08"]').hover();
+    const tip = page.locator(".activity-tip");
+    await expect(tip).toContainText("Thu, Oct 8, 2026");
+    await expect(tip).toContainText("28K tokens");
+    await expect(tip).toContainText("28 sessions");
+    await expect(tip).toContainText("Codex");
+    await expect(tip).toContainText("Pi");
+
+    await page.getByRole("group", { name: "Shade days by" }).getByRole("button", { name: "Sessions" }).click();
+    await expect(page).toHaveURL(/activityBy=sessions/);
+    await expect(page.locator(".activity-tip")).toHaveCount(0);
+
+    // Keyboard: today is focusable; ArrowLeft moves back one week.
+    await page.locator('.activity-cell[tabindex="0"]').focus();
+    await expect(page.locator('.activity-cell[tabindex="0"]')).toHaveAttribute("data-date", "2026-10-09");
+    await page.keyboard.press("ArrowLeft");
+    const picked = page.locator('.activity-cell[data-date="2026-10-02"]');
+    await expect(picked).toBeFocused();
+
+    // Enter scopes the list below to that day.
+    await page.keyboard.press("Enter");
+    await expect(page).toHaveURL(/day=2026-10-02/);
+    await expect(picked).toHaveAttribute("aria-selected", "true");
+    await expect(page.locator(".session-day")).toContainText("Fri, Oct 2, 2026 (Europe/Berlin)");
+    await expect.poll(() => sessionsQuery?.get("from")).toBe("2026-10-01T22:00:00.000Z");
+    expect(sessionsQuery!.get("to")).toBe("2026-10-02T22:00:00.000Z");
+    // The period selector keeps showing the period the graph covers.
+    await expect(page.getByRole("button", { name: "30D", exact: true })).toHaveClass(/active/);
+
+    // Picking the day again, the explicit link, or a new period returns to the selected period.
+    await picked.click();
+    await expect(page).not.toHaveURL(/day=/);
+    await expect(picked).toHaveAttribute("aria-selected", "false");
+    await page.locator('.activity-cell[data-date="2026-10-08"]').click();
+    await expect(page).toHaveURL(/day=2026-10-08/);
+    await page.getByRole("button", { name: "Show selected period", exact: true }).click();
+    await expect(page).not.toHaveURL(/day=/);
+    await page.locator('.activity-cell[data-date="2026-10-08"]').click();
+    await expect(page).toHaveURL(/day=2026-10-08/);
+    await page.getByRole("button", { name: "90D", exact: true }).click();
+    await expect(page).not.toHaveURL(/day=/);
+    await expect.poll(() => Date.now() - Date.parse(activityFrom.at(-1)!)).toBeGreaterThan(89 * 86_400_000);
+  });
+
+  test("picked activity edge days stay inside the selected custom period", async ({ page }) => {
+    const from = "2026-10-08T00:00:00.000Z";
+    const to = "2026-10-09T00:00:00.000Z";
+    await page.addInitScript(({ from, to }) => {
+      localStorage.setItem("observer.filters", JSON.stringify({ range: "custom", from, to }));
+    }, { from, to });
+    await page.route("**/api/v1/config", (route) => route.fulfill({ json: { timezone: "Europe/Berlin" } }));
+    const days = ["2026-10-08", "2026-10-09"].map((date) => ({
+      date, sessions: 1, processedTokens: 100, requests: 1,
+      harnesses: [{ harness: "codex", sessions: 1, processedTokens: 100, requests: 1 }],
+    }));
+    await page.route("**/api/v1/activity?**", (route) => route.fulfill({ json: {
+      timezone: "Europe/Berlin", start: days[0].date, end: days[1].date, days,
+      totals: { sessions: 2, processedTokens: 200, requests: 2, activeDays: 2 },
+    } }));
+    let sessionsQuery: URLSearchParams | null = null;
+    await page.route("**/api/v1/sessions?**", (route) => {
+      sessionsQuery = new URL(route.request().url()).searchParams;
+      const total = sessionsQuery.get("from") === from && sessionsQuery.get("to") === to ? 2 : 1;
+      return route.fulfill({ json: { items: [], total, page: 1, pageSize: 25 } });
+    });
+    await page.goto("/sessions");
+    const resultCount = page.locator(".session-result-status [role=status]").last();
+    await expect(resultCount).toHaveText("2 sessions");
+    await page.locator('.activity-cell[data-date="2026-10-08"]').click();
+    await expect(page).toHaveURL(/day=2026-10-08/);
+    await expect.poll(() => sessionsQuery?.get("from")).toBe(from);
+    expect(sessionsQuery!.get("to")).toBe("2026-10-08T22:00:00.000Z");
+    await page.locator('.activity-cell[data-date="2026-10-09"]').click();
+    await expect(page).toHaveURL(/day=2026-10-09/);
+    await expect.poll(() => sessionsQuery?.get("from")).toBe("2026-10-08T22:00:00.000Z");
+    expect(sessionsQuery!.get("to")).toBe(to);
+    await expect(resultCount).toHaveText("1 session");
+    await page.getByRole("button", { name: "Show selected period", exact: true }).click();
+    await expect(page).not.toHaveURL(/day=/);
+    // Returning to a fresh cached period need not trigger another request.
+    await expect(resultCount).toHaveText("2 sessions");
+  });
+
+  test("activity days cannot be picked from a previous period while loading", async ({ page }) => {
+    await page.clock.setFixedTime(new Date("2026-10-09T10:00:00Z"));
+    const days = Array.from({ length: 31 }, (_, index) => ({
+      date: new Date(Date.UTC(2026, 8, 9 + index)).toISOString().slice(0, 10),
+      sessions: 1, processedTokens: 100, requests: 1,
+      harnesses: [{ harness: "codex", sessions: 1, processedTokens: 100, requests: 1 }],
+    }));
+    let release: () => void = () => {};
+    const pending = new Promise<void>((resolve) => { release = resolve; });
+    let newPeriodRequested = false;
+    await page.route("**/api/v1/activity?**", async (route) => {
+      const from = new URL(route.request().url()).searchParams.get("from")!;
+      const short = from.startsWith("2026-10-02");
+      if (short) {
+        newPeriodRequested = true;
+        await pending;
+      }
+      const visible = short ? days.slice(-8) : days;
+      await route.fulfill({ json: {
+        timezone: "Europe/Berlin", start: visible[0].date, end: visible.at(-1)!.date, days: visible,
+        totals: { sessions: visible.length, processedTokens: visible.length * 100, requests: visible.length, activeDays: visible.length },
+      } });
+    });
+    await page.goto("/sessions");
+    const oldDay = page.locator('.activity-cell[data-date="2026-09-25"]');
+    await expect(oldDay).toBeVisible();
+    await page.getByRole("button", { name: "7D", exact: true }).click();
+    await expect.poll(() => newPeriodRequested).toBe(true);
+    await expect(oldDay).toHaveAttribute("aria-disabled", "true");
+    // Dispatch both selection paths while the previous period is still drawn.
+    await oldDay.dispatchEvent("click");
+    await oldDay.press("Enter");
+    await expect(page).not.toHaveURL(/day=/);
+    release();
+    await expect(page.locator(".activity-cell[data-date]")).toHaveCount(8);
+    const currentDay = page.locator('.activity-cell[data-date="2026-10-08"]');
+    await expect(currentDay).toHaveAttribute("aria-disabled", "false");
+    await currentDay.click();
+    await expect(page).toHaveURL(/day=2026-10-08/);
+  });
+
   test("analysis route renders the analytical views", async ({ page }) => {
     await page.goto("/analysis");
     await expect(page.locator("h1")).toHaveText("Analysis");
