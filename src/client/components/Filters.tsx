@@ -44,13 +44,10 @@ export function FiltersBar({
   dims,
   filters,
   onChange,
-  showRange = true,
 }: {
   dims: DimensionLists | undefined;
   filters: FilterState;
   onChange: (next: FilterState) => void;
-  /** Views with their own time window hide the shared period controls. */
-  showRange?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const panelRef = useRef<HTMLDivElement>(null);
@@ -78,13 +75,11 @@ export function FiltersBar({
 
   return (
     <div className="observation-controls">
-      {showRange && (
-        <div className="range-tabs" aria-label="Observation period">
-          {([["7d", "7D"], ["30d", "30D"], ["90d", "90D"], ["1y", "1Y"], ["all", "ALL"]] as Array<[RangeKey, string]>).map(([value, label]) => (
-            <button key={value} className={filters.range === value ? "active" : ""} onClick={() => update({ range: value })}>{label}</button>
-          ))}
-        </div>
-      )}
+      <div className="range-tabs" aria-label="Observation period">
+        {([["7d", "7D"], ["30d", "30D"], ["90d", "90D"], ["1y", "1Y"], ["all", "ALL"]] as Array<[RangeKey, string]>).map(([value, label]) => (
+          <button key={value} className={filters.range === value ? "active" : ""} onClick={() => update({ range: value })}>{label}</button>
+        ))}
+      </div>
       <div className="filter-anchor" ref={panelRef}>
         <button
           className={`filter-trigger${open ? " open" : ""}${activeChips.length ? " has-filters" : ""}`}
@@ -117,11 +112,11 @@ export function FiltersBar({
                 <MultiSelect label="Provider" width={200} options={(dims?.providers ?? []).map((p) => ({ id: p.id, label: p.display, count: p.eventCount }))} selected={filters.provider ?? []} onChange={(next) => update({ provider: next.length ? next : undefined })} />
                 <MultiSelect label="Project" width={220} options={(dims?.projects ?? []).map((p) => ({ id: p.id, label: shortPath(p.path), count: p.eventCount }))} selected={filters.project ?? []} onChange={(next) => update({ project: next.length ? next : undefined })} />
               </div>
-              {showRange && <div className="custom-range">
+              <div className="custom-range">
                 <span className="custom-range-label">Date range</span>
                 <button className={filters.range === "custom" ? "active sm" : "ghost sm"} onClick={() => update({ range: "custom" })}>Custom</button>
                 {filters.range === "custom" && <><input aria-label="Start date" type="date" value={filters.from?.slice(0, 10) ?? ""} onChange={(e) => update({ from: e.target.value ? new Date(e.target.value).toISOString() : null })} /><span>to</span><input aria-label="End date" type="date" value={filters.to?.slice(0, 10) ?? ""} onChange={(e) => update({ to: e.target.value ? new Date(e.target.value).toISOString() : null })} /></>}
-              </div>}
+              </div>
             </div>
           </div>
         )}

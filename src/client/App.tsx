@@ -31,9 +31,6 @@ export function App() {
             <NavLink to="/" end className={({ isActive }) => "navlink" + (isActive ? " active" : "")}>
               <span>Overview</span>
             </NavLink>
-            <NavLink to="/activity" className={({ isActive }) => "navlink" + (isActive ? " active" : "")}>
-              <span>Activity</span>
-            </NavLink>
             <NavLink to="/sessions" className={({ isActive }) => "navlink" + (isActive ? " active" : "")}>
               <span>Sessions</span>
             </NavLink>

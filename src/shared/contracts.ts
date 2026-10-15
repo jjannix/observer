@@ -385,12 +385,8 @@ export interface SessionDetail {
 export const REQUEST_SORTS = ["oldest", "recent", "largest", "model", "fresh", "cache", "output", "cost"] as const;
 export type RequestSort = (typeof REQUEST_SORTS)[number];
 
-/** Contribution-graph windows; each ends on today in the configured time zone. */
-export const ACTIVITY_RANGES = { "1y": 365, "90d": 90, "30d": 30 } as const;
-export type ActivityRange = keyof typeof ACTIVITY_RANGES;
-
 export interface ActivityUsage {
-  /** Distinct sessions with at least one matching request in the window. */
+  /** Distinct sessions with at least one matching request in the period. */
   sessions: number;
   processedTokens: number;
   requests: number;
@@ -402,13 +398,12 @@ export interface ActivityDay extends ActivityUsage {
 }
 
 export interface ActivityResponse {
-  range: ActivityRange;
   timezone: string;
-  /** Inclusive first and last calendar day of the window. */
+  /** Inclusive first and last calendar day the period touches. */
   start: string;
   end: string;
-  /** One entry per calendar day in the window, including idle days. */
+  /** One entry per calendar day, including idle days; edge days are clipped to the period. */
   days: ActivityDay[];
-  /** Window totals; sessions spanning several days are counted once. */
+  /** Period totals; sessions spanning several days are counted once. */
   totals: ActivityUsage & { activeDays: number };
 }

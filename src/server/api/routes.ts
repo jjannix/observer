@@ -1,4 +1,4 @@
-import { ACTIVITY_RANGES, REQUEST_SORTS, SESSION_SORTS, type ActivityRange, type RequestSort, type SessionSort, type SortDirection } from "@shared/contracts";
+import { REQUEST_SORTS, SESSION_SORTS, type RequestSort, type SessionSort, type SortDirection } from "@shared/contracts";
 import { SessionAnalytics } from "./sessions.js";
 import { ActivityAnalytics } from "./activity.js";
 import type { FastifyInstance } from "fastify";
@@ -116,13 +116,11 @@ export function registerApi(app: FastifyInstance, state: AppState): void {
   });
 
   app.get("/api/v1/activity", async (req, reply) => {
-    const q = req.query as Record<string, unknown>;
-    const range = q.range == null ? "1y" : String(q.range);
-    if (!Object.hasOwn(ACTIVITY_RANGES, range)) {
-      return reply.code(400).send({ error: "invalid-activity-range" });
+    const filters = parseFilters(req.query as Record<string, unknown>);
+    if ([filters.from, filters.to].some((value) => value != null && Number.isNaN(Date.parse(value)))) {
+      return reply.code(400).send({ error: "invalid-activity-period" });
     }
-    const { harness, provider, model, project } = parseFilters(q);
-    return activity.daily(range as ActivityRange, { harness, provider, model, project }, state.getConfig().timezone);
+    return activity.daily(filters, state.getConfig().timezone);
   });
 
   app.get("/api/v1/largest-sessions", async (req) => {

@@ -26,7 +26,27 @@ export function dayInTimeZone(instant: Date | string, timezone: string): string 
 /** UTC instants bounding a local calendar day: `from` inclusive, `to` exclusive. DST-safe. */
 export function dayBounds(day: string, timezone: string): { from: string; to: string } {
   return {
-    from: fromZonedTime(`${day}T00:00:00`, timezone).toISOString(),
-    to: fromZonedTime(`${addDays(day, 1)}T00:00:00`, timezone).toISOString(),
+    from: startOfDay(day, timezone),
+    to: startOfDay(addDays(day, 1), timezone),
   };
+}
+
+/** Earliest instant on or after a local day, including midnight offset changes. */
+function startOfDay(day: string, timezone: string): string {
+  const guess = fromZonedTime(`${day}T00:00:00`, timezone).getTime();
+  const localDay = (instant: number) => dayInTimeZone(new Date(instant), timezone);
+  if (localDay(guess) === day && localDay(guess - 1) < day) {
+    return new Date(guess).toISOString();
+  }
+  // Midnight may be skipped or repeated. Find the first instant whose local
+  // date reaches this day; a skipped calendar day has the next day's start.
+  const margin = 36 * 60 * 60 * 1000;
+  let lower = guess - margin;
+  let upper = guess + margin;
+  while (upper - lower > 1) {
+    const middle = Math.floor((lower + upper) / 2);
+    if (localDay(middle) < day) lower = middle;
+    else upper = middle;
+  }
+  return new Date(upper).toISOString();
 }

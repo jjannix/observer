@@ -12,7 +12,8 @@ import {
 } from "@shared/contracts";
 import { dayBounds, isCalendarDay } from "@shared/days";
 import { api, rangeToFilters, type RangeFilters } from "../api.js";
-import { FiltersBar, useFilterState, type FilterState } from "../components/Filters.js";
+import { FiltersBar, useFilterState } from "../components/Filters.js";
+import { ActivityGraph } from "../components/ActivityGraph.js";
 import {
   COLORS,
   CompositionBar,
@@ -27,7 +28,7 @@ export function Sessions() {
   const [filters, setFilters] = useFilterState();
   const [params, setParams] = useSearchParams();
   const selectedId = params.get("session");
-  // A calendar day opened from the activity graph narrows the period without
+  // A calendar day picked in the activity graph narrows the period without
   // replacing the persisted observation range.
   const day = isCalendarDay(params.get("day")) ? params.get("day") : null;
   const { data: config } = useQuery({
@@ -54,17 +55,13 @@ export function Sessions() {
     Number.isInteger(requestedPage) && requestedPage > 0 ? requestedPage : 1;
   const lastSelected = useRef<string | null>(selectedId);
   const searchRef = useRef<HTMLInputElement>(null);
-  // The filter bar shows an opened day as a one-day custom range.
-  const shownFilters: FilterState = day
-    ? { ...filters, range: "custom", from: `${day}T00:00:00.000Z`, to: `${day}T00:00:00.000Z` }
-    : filters;
-  const range = useMemo(() => {
+  // The activity graph shows the selected period; the list narrows to a
+  // picked day within it.
+  const period = useMemo(() => {
     const resolved =
-      day && timezone
-        ? dayBounds(day, timezone)
-        : filters.range === "custom"
-          ? { from: filters.from, to: filters.to }
-          : rangeToFilters(filters.range, "Europe/Berlin");
+      filters.range === "custom"
+        ? { from: filters.from, to: filters.to }
+        : rangeToFilters(filters.range, "Europe/Berlin");
     return {
       from: resolved.from,
       to: resolved.to,
@@ -73,7 +70,18 @@ export function Sessions() {
       model: filters.model,
       project: filters.project,
     };
-  }, [filters, day, timezone]);
+  }, [filters]);
+  const range = useMemo(() => {
+    if (!day || !timezone) return period;
+    const bounds = dayBounds(day, timezone);
+    // Edge-day tiles only count requests inside the observation period.
+    // Keep that same intersection when listing the selected day's sessions.
+    return {
+      ...period,
+      from: period.from && Date.parse(period.from) > Date.parse(bounds.from) ? period.from : bounds.from,
+      to: period.to && Date.parse(period.to) < Date.parse(bounds.to) ? period.to : bounds.to,
+    };
+  }, [period, day, timezone]);
   const { data: dims } = useQuery({
     queryKey: ["dimensions"],
     queryFn: api.dimensions,
@@ -183,25 +191,15 @@ export function Sessions() {
         </div>
         <FiltersBar
           dims={dims}
-          filters={shownFilters}
+          filters={filters}
           onChange={(next) => {
-            // Editing a date turns the shown day into a regular custom range;
-            // other changes keep the persisted custom dates.
-            const datesEdited =
-              Boolean(day) &&
-              (next.from !== shownFilters.from || next.to !== shownFilters.to);
-            const leavesDay = !day || next.range !== "custom" || datesEdited;
-            setFilters(
-              !day || datesEdited
-                ? next
-                : {
-                    ...next,
-                    range: leavesDay ? next.range : filters.range,
-                    from: filters.from,
-                    to: filters.to,
-                  },
-            );
-            updateParams({ page: null, ...(leavesDay ? { day: null } : {}) }, true);
+            // A new period replaces the picked day; other filters keep it.
+            const periodChanged =
+              next.range !== filters.range ||
+              next.from !== filters.from ||
+              next.to !== filters.to;
+            setFilters(next);
+            updateParams({ page: null, ...(periodChanged ? { day: null } : {}) }, true);
           }}
         />
       </div>
@@ -214,6 +212,11 @@ export function Sessions() {
         />
       ) : (
         <>
+          <ActivityGraph
+            filters={period}
+            selectedDay={day}
+            onSelectDay={(next) => updateParams({ day: next, page: null })}
+          />
           <div className="session-toolbar">
             <label className="session-search">
               <span>Search sessions</span>

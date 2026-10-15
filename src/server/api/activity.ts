@@ -1,14 +1,7 @@
 import type { RawDatabase } from "../db/index.js";
-import {
-  ACTIVITY_RANGES,
-  type ActivityDay,
-  type ActivityRange,
-  type ActivityResponse,
-  type AppliedFilters,
-  type HarnessId,
-} from "@shared/contracts";
+import type { ActivityDay, ActivityResponse, HarnessId } from "@shared/contracts";
 import { addDays, dayBounds, dayInTimeZone } from "@shared/days";
-import { buildWhere } from "./analytics.js";
+import { buildWhere, type RangeFilters } from "./analytics.js";
 
 // Same processed-token definition as the session explorer, so a day's total
 // matches the sessions listed when the day is opened there.
@@ -19,21 +12,32 @@ export class ActivityAnalytics {
   constructor(private db: RawDatabase) {}
 
   /**
-   * Per-day usage over the window ending today in `timezone`, aggregated from
-   * normalized events. Days are local calendar days with DST-aware bounds.
+   * Per-day usage over every calendar day in `timezone` that the period
+   * touches, aggregated from normalized events. Days have DST-aware bounds and
+   * are clipped to the period, so the totals match the session list for the
+   * same filters. Without `from` the period starts at the first matching
+   * event; it never extends past today.
    */
   daily(
-    range: ActivityRange,
-    filters: AppliedFilters,
+    filters: RangeFilters,
     timezone: string,
     now: Date = new Date(),
   ): ActivityResponse {
-    const end = dayInTimeZone(now, timezone);
-    const start = addDays(end, -(ACTIVITY_RANGES[range] - 1));
+    const from = filters.from ? new Date(filters.from).toISOString() : null;
+    const to = filters.to ? new Date(filters.to).toISOString() : null;
+    const today = dayInTimeZone(now, timezone);
+    const first = from ?? this.firstEventAt(filters);
+    const start = first ? dayInTimeZone(first, timezone) : today;
+    const last = to ? dayInTimeZone(new Date(Date.parse(to) - 1), timezone) : today;
+    const end = last < today ? last : today;
     const windows: Array<[string, string, string]> = [];
     for (let day = start; day <= end; day = addDays(day, 1)) {
-      const { from, to } = dayBounds(day, timezone);
-      windows.push([day, from, to]);
+      const bounds = dayBounds(day, timezone);
+      windows.push([
+        day,
+        from && from > bounds.from ? from : bounds.from,
+        to && to < bounds.to ? to : bounds.to,
+      ]);
     }
 
     const { sql, params } = buildWhere(this.db, { ...filters, from: null, to: null });
@@ -94,21 +98,23 @@ export class ActivityAnalytics {
       );
     }
 
-    const window = buildWhere(this.db, {
-      ...filters,
-      from: windows[0][1],
-      to: windows[windows.length - 1][2],
-    });
-    const sessions = (
-      this.db
-        .prepare(
-          `SELECT COUNT(DISTINCT e.session_id) AS n FROM usage_events e ${window.sql}`,
-        )
-        .get(...window.params) as { n: number }
-    ).n;
+    let sessions = 0;
+    if (windows.length > 0) {
+      const window = buildWhere(this.db, {
+        ...filters,
+        from: windows[0][1],
+        to: windows[windows.length - 1][2],
+      });
+      sessions = (
+        this.db
+          .prepare(
+            `SELECT COUNT(DISTINCT e.session_id) AS n FROM usage_events e ${window.sql}`,
+          )
+          .get(...window.params) as { n: number }
+      ).n;
+    }
 
     return {
-      range,
       timezone,
       start,
       end,
@@ -120,5 +126,15 @@ export class ActivityAnalytics {
         activeDays: days.filter((day) => day.requests > 0).length,
       },
     };
+  }
+
+  /** Earliest matching event before the period's end, or null when there is none. */
+  private firstEventAt(filters: RangeFilters): string | null {
+    const { sql, params } = buildWhere(this.db, { ...filters, from: null });
+    return (
+      this.db
+        .prepare(`SELECT MIN(e.occurred_at) AS first FROM usage_events e ${sql}`)
+        .get(...params) as { first: string | null }
+    ).first;
   }
 }

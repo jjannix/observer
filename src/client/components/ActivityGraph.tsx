@@ -1,125 +1,111 @@
 import { useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent } from "react";
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
-import { useNavigate, useSearchParams } from "react-router-dom";
-import { ACTIVITY_RANGES, type ActivityDay, type ActivityRange, type ActivityResponse } from "@shared/contracts";
-import { api } from "../api.js";
-import { FiltersBar, useFilterState } from "../components/Filters.js";
-import { colorForHarness, harnessLabel } from "../components/colors.js";
-import { fmtCompact, fmtInt } from "../components/ui.js";
+import { useSearchParams } from "react-router-dom";
+import { type ActivityDay, type ActivityResponse } from "@shared/contracts";
+import { api, type RangeFilters } from "../api.js";
+import { colorForHarness, harnessLabel } from "./colors.js";
+import { fmtCompact, fmtInt } from "./ui.js";
 
 type Intensity = "tokens" | "sessions";
 
-const RANGE_OPTIONS: Array<[ActivityRange, string, string]> = [
-  ["1y", "1Y", "last year"],
-  ["90d", "90D", "last 90 days"],
-  ["30d", "1M", "last month"],
-];
 const WEEKDAYS = ["Mon", "", "Wed", "", "Fri", "", ""];
 
-export function Activity() {
-  const [filters, setFilters] = useFilterState();
+/**
+ * Contribution graph of daily usage over the selected period; picking a day
+ * scopes the session list to it.
+ */
+export function ActivityGraph({
+  filters,
+  selectedDay,
+  onSelectDay,
+}: {
+  filters: RangeFilters;
+  selectedDay: string | null;
+  onSelectDay: (day: string | null) => void;
+}) {
   const [params, setParams] = useSearchParams();
-  const range: ActivityRange = Object.hasOwn(ACTIVITY_RANGES, params.get("range") ?? "")
-    ? (params.get("range") as ActivityRange)
-    : "1y";
-  const intensity: Intensity = params.get("by") === "sessions" ? "sessions" : "tokens";
-  const dimensions = useMemo(
-    () => ({ harness: filters.harness, provider: filters.provider, model: filters.model, project: filters.project }),
-    [filters.harness, filters.provider, filters.model, filters.project],
-  );
-  const { data: dims } = useQuery({ queryKey: ["dimensions"], queryFn: api.dimensions });
+  const intensity: Intensity = params.get("activityBy") === "sessions" ? "sessions" : "tokens";
   const activity = useQuery({
-    queryKey: ["activity", range, dimensions],
-    queryFn: () => api.activity(range, dimensions),
+    queryKey: ["activity", filters],
+    queryFn: () => api.activity(filters),
     placeholderData: keepPreviousData,
     refetchInterval: 60_000,
   });
-  const update = (patch: Record<string, string | null>) =>
+  const setIntensity = (value: Intensity) =>
     setParams(
       (previous) => {
         const next = new URLSearchParams(previous);
-        for (const [key, value] of Object.entries(patch)) {
-          if (value) next.set(key, value);
-          else next.delete(key);
-        }
+        if (value === "sessions") next.set("activityBy", value);
+        else next.delete("activityBy");
         return next;
       },
       { replace: true },
     );
   const data = activity.data;
-  const busiest = data?.days.reduce<ActivityDay | null>(
-    (best, day) => (metricOf(day, intensity) > (best ? metricOf(best, intensity) : 0) ? day : best),
-    null,
-  );
-  const rangeLabel = RANGE_OPTIONS.find(([key]) => key === range)![2];
 
   return (
-    <div className="activity-page">
-      <div className="page-head">
-        <div className="titles">
-          <h1>Activity</h1>
-          <p className="page-sub">Every day you worked with a coding agent.</p>
+    <section className="session-activity activity-section" aria-labelledby="activity-heading" aria-busy={activity.isFetching}>
+      <div className="section-head">
+        <div>
+          <h2 id="activity-heading">Coding activity</h2>
+          <span className="hint">
+            Daily {intensity === "tokens" ? "processed tokens" : "sessions"} in the selected period
+            {data ? ` · ${data.timezone} days` : ""}
+          </span>
         </div>
-        <FiltersBar dims={dims} filters={filters} onChange={setFilters} showRange={false} />
-      </div>
-
-      <section className="instrument-section activity-section" aria-labelledby="activity-heading" aria-busy={activity.isFetching}>
-        <div className="section-head">
-          <div>
-            <h2 id="activity-heading">Coding activity</h2>
-            <span className="hint">
-              Daily {intensity === "tokens" ? "processed tokens" : "sessions"} · {rangeLabel}
-              {data ? ` · ${data.timezone} days` : ""}
-            </span>
-          </div>
-          <div className="chart-controls">
-            <Toggle
-              label="Activity period"
-              value={range}
-              options={RANGE_OPTIONS.map(([key, short]): [ActivityRange, string] => [key, short])}
-              onChange={(next) => update({ range: next === "1y" ? null : next })}
-            />
-            <Toggle
-              label="Shade days by"
-              value={intensity}
-              options={[["tokens", "Tokens"], ["sessions", "Sessions"]]}
-              onChange={(next) => update({ by: next === "tokens" ? null : next })}
-            />
-          </div>
-        </div>
-
-        <div className="activity-readings">
-          <Reading label="sessions" value={fmtInt(data?.totals.sessions)} />
-          <Reading label="tokens processed" value={fmtCompact(data?.totals.processedTokens)} exact={fmtInt(data?.totals.processedTokens)} />
-          <Reading label="active days" value={data ? `${fmtInt(data.totals.activeDays)} / ${fmtInt(data.days.length)}` : "—"} />
-          <Reading
-            label="busiest day"
-            value={busiest ? formatDay(busiest.date, { month: "short", day: "numeric" }) : "—"}
-            detail={busiest ? metricText(busiest, intensity) : undefined}
+        <div className="chart-controls">
+          <Toggle
+            label="Shade days by"
+            value={intensity}
+            options={[["tokens", "Tokens"], ["sessions", "Sessions"]]}
+            onChange={setIntensity}
           />
         </div>
+      </div>
 
-        {activity.isError ? (
-          <div className="session-error" role="alert">
-            <p>Activity couldn’t be loaded. Try again or check that Observer is running.</p>
-            <button className="ghost" onClick={() => void activity.refetch()}>Try again</button>
-          </div>
-        ) : !data ? (
-          <div className="skeleton activity-skeleton" />
-        ) : (
-          <ContributionGraph key={`${data.range}:${data.end}`} data={data} intensity={intensity} />
-        )}
-      </section>
-    </div>
+      {activity.isError ? (
+        <div className="session-error" role="alert">
+          <p>Activity couldn’t be loaded. Try again or check that Observer is running.</p>
+          <button className="ghost" onClick={() => void activity.refetch()}>Try again</button>
+        </div>
+      ) : !data ? (
+        <div className="skeleton activity-skeleton" />
+      ) : data.days.length === 0 ? (
+        <p className="hint activity-empty">The selected period has no days up to today.</p>
+      ) : (
+        <ContributionGraph
+          key={`${data.start}:${data.end}`}
+          data={data}
+          intensity={intensity}
+          selectedDay={selectedDay}
+          onSelectDay={onSelectDay}
+          interactive={!activity.isPlaceholderData}
+        />
+      )}
+    </section>
   );
 }
 
-function ContributionGraph({ data, intensity }: { data: ActivityResponse; intensity: Intensity }) {
-  const navigate = useNavigate();
+function ContributionGraph({
+  data,
+  intensity,
+  selectedDay,
+  onSelectDay,
+  interactive,
+}: {
+  data: ActivityResponse;
+  intensity: Intensity;
+  selectedDay: string | null;
+  onSelectDay: (day: string | null) => void;
+  interactive: boolean;
+}) {
   const wrapper = useRef<HTMLDivElement>(null);
   const scroller = useRef<HTMLDivElement>(null);
   const cells = useRef(new Map<number, HTMLElement>());
-  const [focusIndex, setFocusIndex] = useState(data.days.length - 1);
+  const [focusIndex, setFocusIndex] = useState(() => {
+    const selected = data.days.findIndex((day) => day.date === selectedDay);
+    return selected >= 0 ? selected : data.days.length - 1;
+  });
   const [active, setActive] = useState<{ index: number; x: number; y: number } | null>(null);
 
   // Monday-first weeks: pad the first column so each row is one weekday.
@@ -139,8 +125,11 @@ function ContributionGraph({ data, intensity }: { data: ActivityResponse; intens
     if (!frame) return;
     setActive({ index, x: cell.left - frame.left + cell.width / 2, y: cell.top - frame.top });
   };
+  // Picking the selected day again returns the list to the selected period.
   const open = (day: ActivityDay) => {
-    if (day.requests > 0) navigate(`/sessions?day=${day.date}`);
+    if (!interactive) return;
+    if (day.date === selectedDay) onSelectDay(null);
+    else if (day.requests > 0) onSelectDay(day.date);
   };
   const move = (event: KeyboardEvent, index: number) => {
     const step = { ArrowUp: -1, ArrowDown: 1, ArrowLeft: -7, ArrowRight: 7 }[event.key];
@@ -166,7 +155,7 @@ function ContributionGraph({ data, intensity }: { data: ActivityResponse; intens
   const legend = levelLegend(thresholds, intensity);
 
   return (
-    <div className="activity-frame" ref={wrapper} data-range={data.range} style={{ "--columns": columns } as CSSProperties}>
+    <div className="activity-frame" ref={wrapper} style={{ "--columns": columns } as CSSProperties}>
       <div className="activity-scroll" ref={scroller} onScroll={() => setActive(null)}>
         <div className="activity-graph" onMouseLeave={() => setActive(null)}>
           {months.map(({ column, label }) => (
@@ -178,7 +167,7 @@ function ContributionGraph({ data, intensity }: { data: ActivityResponse; intens
           <div
             role="grid"
             className="activity-cells"
-            aria-label={`Daily coding activity, ${formatDay(data.start)} to ${formatDay(data.end)}. Use arrow keys to move between days and Enter to open a day's sessions.`}
+            aria-label={`Daily coding activity, ${formatDay(data.start)} to ${formatDay(data.end)}. Use arrow keys to move between days and Enter to list a day's sessions.`}
           >
             {WEEKDAYS.map((_, row) => (
               <div role="row" key={row} className="activity-row">
@@ -188,6 +177,7 @@ function ContributionGraph({ data, intensity }: { data: ActivityResponse; intens
                   const position = { gridColumn: column + 2, gridRow: row + 2 };
                   if (!day) return <span key={column} role="presentation" className="activity-cell is-outside" style={position} />;
                   const level = levelOf(metricOf(day, intensity), thresholds);
+                  const selected = day.date === selectedDay;
                   return (
                     <span
                       key={column}
@@ -197,7 +187,9 @@ function ContributionGraph({ data, intensity }: { data: ActivityResponse; intens
                       }}
                       role="gridcell"
                       tabIndex={index === focusIndex ? 0 : -1}
-                      className={`activity-cell${day.requests > 0 ? " is-active" : ""}${active?.index === index ? " is-hovered" : ""}`}
+                      className={`activity-cell${day.requests > 0 ? " is-active" : ""}${selected ? " is-selected" : ""}${active?.index === index ? " is-hovered" : ""}`}
+                      aria-selected={selected}
+                      aria-disabled={!interactive || (day.requests === 0 && !selected)}
                       data-level={level}
                       data-date={day.date}
                       style={position}
@@ -244,7 +236,9 @@ function ContributionGraph({ data, intensity }: { data: ActivityResponse; intens
                   </div>
                 ))}
               </div>
-              <div className="activity-tip-hint">Click to open sessions</div>
+              <div className="activity-tip-hint">
+                {tip.date === selectedDay ? "Click to show the selected period" : "Click to list its sessions"}
+              </div>
             </>
           )}
         </div>
@@ -252,7 +246,9 @@ function ContributionGraph({ data, intensity }: { data: ActivityResponse; intens
 
       <div className="activity-legend">
         <span className="hint">
-          {data.totals.requests === 0 ? "No activity in this period." : "Click a day to open its sessions."}
+          {data.totals.requests === 0
+            ? "No activity in this period."
+            : `${fmtInt(data.totals.activeDays)} active ${plural(data.totals.activeDays, "day")} · ${fmtInt(data.totals.sessions)} ${plural(data.totals.sessions, "session")} · ${fmtCompact(data.totals.processedTokens)} tokens. Click a day to list its sessions.`}
         </span>
         <div className="activity-scale" aria-label={`Shade scale by ${intensity}`}>
           <span>Less</span>
@@ -284,16 +280,6 @@ function Toggle<T extends string>({
           {text}
         </button>
       ))}
-    </div>
-  );
-}
-
-function Reading({ label, value, exact, detail }: { label: string; value: string; exact?: string; detail?: string }) {
-  return (
-    <div className="readout">
-      <div className="readout-value" title={exact}>{value}</div>
-      <div className="readout-label">{label}</div>
-      {detail && <div className="readout-detail">{detail}</div>}
     </div>
   );
 }
