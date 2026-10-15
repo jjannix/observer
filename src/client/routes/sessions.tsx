@@ -12,7 +12,7 @@ import {
 } from "@shared/contracts";
 import { dayBounds, isCalendarDay } from "@shared/days";
 import { api, rangeToFilters, type RangeFilters } from "../api.js";
-import { FiltersBar, useFilterState } from "../components/Filters.js";
+import { FiltersBar, useFilterState, type FilterState } from "../components/Filters.js";
 import {
   COLORS,
   CompositionBar,
@@ -54,6 +54,10 @@ export function Sessions() {
     Number.isInteger(requestedPage) && requestedPage > 0 ? requestedPage : 1;
   const lastSelected = useRef<string | null>(selectedId);
   const searchRef = useRef<HTMLInputElement>(null);
+  // The filter bar shows an opened day as a one-day custom range.
+  const shownFilters: FilterState = day
+    ? { ...filters, range: "custom", from: `${day}T00:00:00.000Z`, to: `${day}T00:00:00.000Z` }
+    : filters;
   const range = useMemo(() => {
     const resolved =
       day && timezone
@@ -179,17 +183,23 @@ export function Sessions() {
         </div>
         <FiltersBar
           dims={dims}
-          filters={day ? { ...filters, range: "custom" } : filters}
+          filters={shownFilters}
           onChange={(next) => {
-            const leavesDay =
-              !day ||
-              next.range !== "custom" ||
-              next.from !== filters.from ||
-              next.to !== filters.to;
+            // Editing a date turns the shown day into a regular custom range;
+            // other changes keep the persisted custom dates.
+            const datesEdited =
+              Boolean(day) &&
+              (next.from !== shownFilters.from || next.to !== shownFilters.to);
+            const leavesDay = !day || next.range !== "custom" || datesEdited;
             setFilters(
-              leavesDay
+              !day || datesEdited
                 ? next
-                : { ...next, range: filters.range, from: filters.from, to: filters.to },
+                : {
+                    ...next,
+                    range: leavesDay ? next.range : filters.range,
+                    from: filters.from,
+                    to: filters.to,
+                  },
             );
             updateParams({ page: null, ...(leavesDay ? { day: null } : {}) }, true);
           }}

@@ -353,6 +353,10 @@ test.describe("Observer UI", () => {
     await expect(page.getByText("Fri, Oct 2, 2026", { exact: true })).toBeVisible();
     await expect.poll(() => sessionsQuery?.get("from")).toBe("2026-10-01T22:00:00.000Z");
     expect(sessionsQuery!.get("to")).toBe("2026-10-02T22:00:00.000Z");
+    await page.getByRole("button", { name: /^Filter/ }).click();
+    await expect(page.getByLabel("Start date")).toHaveValue("2026-10-02");
+    await expect(page.getByLabel("End date")).toHaveValue("2026-10-02");
+    await page.getByRole("button", { name: /^Filter/ }).click();
     await page.getByRole("button", { name: "Show selected period", exact: true }).click();
     await expect(page).toHaveURL(/\/sessions$/);
     expect(requested).toContain("30d");
