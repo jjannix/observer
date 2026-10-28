@@ -291,6 +291,34 @@ test.describe("Observer UI", () => {
     await expect(page.locator(".session-browser-table tbody tr").first()).toBeVisible();
   });
 
+  test("day-scoped sessions recover after the time zone fails to load", async ({ page }) => {
+    // Keep the tested day inside the observation period, independently of today.
+    await page.addInitScript(() => {
+      localStorage.setItem("observer.filters", JSON.stringify({
+        range: "custom", from: "2026-09-05T04:00:00.000Z", to: "2026-09-07T03:00:00.000Z",
+      }));
+    });
+    const sessionsQueries: URLSearchParams[] = [];
+    await page.route("**/api/v1/sessions?**", (route) => {
+      sessionsQueries.push(new URL(route.request().url()).searchParams);
+      return route.fulfill({ json: { items: [], total: 0, page: 1, pageSize: 25 } });
+    });
+    await page.route("**/api/v1/config", (route) => route.fulfill({ status: 503, json: { error: "unavailable" } }));
+    await page.goto("/sessions?day=2026-09-06");
+    await expect(page.getByRole("alert")).toContainText("The time zone couldn’t be loaded");
+    await expect(page.locator(".session-result-status")).toContainText("Unable to load");
+    expect(sessionsQueries).toHaveLength(0);
+
+    await page.unroute("**/api/v1/config");
+    await page.route("**/api/v1/config", (route) => route.fulfill({ json: { timezone: "America/Santiago" } }));
+    await page.getByRole("button", { name: "Try again", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "No matching sessions" })).toBeVisible();
+    await expect(page.getByRole("alert")).toHaveCount(0);
+    expect(sessionsQueries).toHaveLength(1);
+    expect(sessionsQueries[0].get("from")).toBe("2026-09-06T04:00:00.000Z");
+    expect(sessionsQueries[0].get("to")).toBe("2026-09-07T03:00:00.000Z");
+  });
+
   test("session activity graph shades days, explains them on hover and lists a day's sessions", async ({ page }) => {
     const days = Array.from({ length: 30 }, (_, index) => {
       const date = new Date(Date.UTC(2026, 8, 10 + index)).toISOString().slice(0, 10);

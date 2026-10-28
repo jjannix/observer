@@ -128,6 +128,27 @@ describe("Activity API", () => {
     expect(day(codex, "2026-10-08").requests).toBe(0);
   });
 
+  it("keeps late-evening requests on the previous day when DST skips midnight", async () => {
+    const config = state.getConfig();
+    config.timezone = "America/Santiago";
+    state.updateConfig(config);
+    const insert = state.raw.prepare(`INSERT INTO usage_events
+      (id, harness, occurred_at, session_id, logical_session_id, request_id, processed_input_tokens)
+      VALUES (?, 'pi', ?, 'pi:dst', 'dst', ?, ?)`);
+    // The clock jumps from Sep 5 at 23:59:59 to Sep 6 at 01:00.
+    insert.run("before-midnight-gap", "2026-09-06T03:30:00.000Z", "before-midnight-gap", 100);
+    insert.run("after-midnight-gap", "2026-09-06T04:30:00.000Z", "after-midnight-gap", 200);
+
+    const response: ActivityResponse = await get("/api/v1/activity?from=2026-09-05T04:00:00.000Z&to=2026-09-07T03:00:00.000Z");
+    for (const [date, tokens] of [["2026-09-05", 100], ["2026-09-06", 200]] as const) {
+      expect(day(response, date)).toMatchObject({ sessions: 1, requests: 1, processedTokens: tokens });
+      const { from, to } = dayBounds(date, config.timezone);
+      const sessions = await get(`/api/v1/sessions?from=${from}&to=${to}`);
+      expect(sessions.total).toBe(1);
+      expect(sessions.items[0]).toMatchObject({ requests: 1, processedTokens: tokens });
+    }
+  });
+
   it("clips edge days to the period so totals match the session list", async () => {
     // 23:45 Berlin on Oct 8: excludes the 23:30 request that day.
     const from = "2026-10-08T21:45:00.000Z";

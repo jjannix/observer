@@ -31,12 +31,13 @@ export function Sessions() {
   // A calendar day picked in the activity graph narrows the period without
   // replacing the persisted observation range.
   const day = isCalendarDay(params.get("day")) ? params.get("day") : null;
-  const { data: config } = useQuery({
+  const config = useQuery({
     queryKey: ["config"],
     queryFn: api.config,
     enabled: Boolean(day),
   });
-  const timezone = config?.timezone;
+  const timezone = config.data?.timezone;
+  const configError = Boolean(day && !timezone && config.isError);
   const search = params.get("q") ?? "";
   const [searchInput, setSearchInput] = useState(search);
   const sort = SESSION_SORTS.includes(params.get("sort") as SessionSort)
@@ -277,15 +278,22 @@ export function Sessions() {
               <div className="session-result-status">
                 <UpdatingStatus active={list.isFetching && !list.isPending} />
                 <span className="session-hint" role="status">
-                  {list.data
-                    ? `${fmtInt(list.data.total)} ${list.data.total === 1 ? "session" : "sessions"}`
-                    : list.isError
-                      ? "Unable to load"
-                      : "Loading sessions…"}
+                  {configError
+                    ? "Unable to load"
+                    : list.data
+                      ? `${fmtInt(list.data.total)} ${list.data.total === 1 ? "session" : "sessions"}`
+                      : list.isError
+                        ? "Unable to load"
+                        : "Loading sessions…"}
                 </span>
               </div>
             </div>
-            {list.isError ? (
+            {configError ? (
+              <QueryError
+                onRetry={() => void config.refetch()}
+                message="The time zone couldn’t be loaded. Try again or check that Observer is running."
+              />
+            ) : list.isError ? (
               <QueryError
                 onRetry={() => void list.refetch()}
                 message="Sessions couldn’t be loaded. Try again or check that Observer is running."
